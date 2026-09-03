@@ -83,7 +83,8 @@ Panel {
   property bool cursorActive: false
   property int cursorIndex: 0
 
-  readonly property var nav: ["hero", "toggle", "camera-pick", "size-small", "size-medium", "size-large"]
+  readonly property var nav: ["hero", "toggle", "camera-pick", "size-small", "size-medium", "size-large",
+    "orient-portrait", "orient-landscape", "rounding-0", "rounding-8", "rounding-16", "rounding-24"]
 
   function navIndex(kind) { return root.nav.indexOf(kind) }
   function hasCursorAt(kind) { return root.cursorActive && root.navIndex(kind) === root.cursorIndex }
@@ -106,10 +107,15 @@ Panel {
     else if (kind === "size-small") root.applySize("small")
     else if (kind === "size-medium") root.applySize("medium")
     else if (kind === "size-large") root.applySize("large")
+    else if (kind === "orient-portrait") root.applyOrientation("portrait")
+    else if (kind === "orient-landscape") root.applyOrientation("landscape")
+    else if (kind.indexOf("rounding-") === 0) root.applyRounding(kind.slice("rounding-".length))
   }
 
   function toggle() { if (root.service) root.service.toggle() }
   function applySize(value) { if (root.service) root.service.setSize(value) }
+  function applyOrientation(value) { if (root.service) root.service.setOrientation(value) }
+  function applyRounding(value) { if (root.service && /^[0-9]+$/.test(value)) root.service.setRounding(value) }
   function pickCamera() { if (root.service) root.service.pickCamera() }
 
   onOpenedChanged: if (opened) {
@@ -225,17 +231,6 @@ Panel {
       onActivateRequested: if (root.cursorActive) root.activateCursor()
       onCloseRequested: root.close()
       onTabRequested: function (direction) { root.switchPanel(direction) }
-
-      // Pro keyboard shortcuts (same pattern as on-air's p/t/r).
-      onTextKey: function (text) {
-        if (text === "p" || text === "P") {
-          root.toggle()
-        } else if (text === "c" || text === "C") {
-          root.pickCamera()
-        } else if (text === "r" || text === "R") {
-          if (root.service) root.service.refresh(true)
-        }
-      }
 
       Flickable {
         id: panelFlick
@@ -441,13 +436,77 @@ Panel {
             }
           }
 
+          // --------------------------------------------------- orientation
+          PanelSectionHeader {
+            text: "ORIENTATION"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Row {
+            width: column.width
+            spacing: Style.space(8)
+            leftPadding: Style.space(10)
+
+            Button {
+              text: "Portrait"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bordered: true
+              selected: root.orientation === "portrait"
+              hasCursor: root.hasCursorAt("orient-portrait")
+              onHovered: function (on) { if (on) root.setCursor("orient-portrait") }
+              onClicked: root.applyOrientation("portrait")
+            }
+
+            Button {
+              text: "Landscape"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bordered: true
+              selected: root.orientation === "landscape"
+              hasCursor: root.hasCursorAt("orient-landscape")
+              onHovered: function (on) { if (on) root.setCursor("orient-landscape") }
+              onClicked: root.applyOrientation("landscape")
+            }
+          }
+
+          // ------------------------------------------------------- rounding
+          PanelSectionHeader {
+            text: "ROUNDING"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Row {
+            width: column.width
+            spacing: Style.space(8)
+            leftPadding: Style.space(10)
+
+            Repeater {
+              model: ["0", "8", "16", "24"]
+
+              Button {
+                required property string modelData
+                text: modelData === "0" ? "Square" : modelData + "px"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                selected: root.rounding === modelData
+                hasCursor: root.hasCursorAt("rounding-" + modelData)
+                onHovered: function (on) { if (on) root.setCursor("rounding-" + modelData) }
+                onClicked: root.applyRounding(modelData)
+              }
+            }
+          }
+
           // --------------------------------------------------- shortcuts
           PanelSeparator { foreground: root.foreground }
 
           Text {
             width: column.width - Style.space(20)
             x: Style.space(10)
-            text: "P toggle · C pick camera · R refresh. Right-click the bar pill to toggle quickly. Shown is the same overlay as screen-recording — never records."
+            text: "Right-click the bar pill to toggle quickly. The overlay mirrors screen-recording's — live webcam only, never records."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
