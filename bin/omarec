@@ -1,0 +1,310 @@
+#!/bin/bash
+#
+# omarchy:summary=Toggle a floating live webcam overlay (no recording)
+# omarchy:group=capture
+#
+# Backs the "OMARec" omarchy shell plugin. It shows a floating live camera
+# overlay — the same idea as `omarchy screenrecord --with-webcam`, minus the
+# recording — with user-configurable size, orientation (portrait/landscape) and
+# corner rounding.
+#
+# It is fully self-contained and isolated:
+#   * Uses its OWN Wayland app id (`omarec-<orientation>-<size>-<rounding>`), so
+#     it never collides with Omarchy's `WebcamOverlay` screen-record rules and
+#     never leaks its geometry/rounding to them.
+#   * Own geometry via a runtime `hl.window_rule` (float/pin/size/move/rounding);
+#     no edits to hyprland.lua or any Omarchy config are needed.
+#   * All state (device, size, orientation, rounding) lives in omarec.conf inside
+#     this plugin folder; deleting the folder removes everything.
+#
+# Usage:
+#   omarec                          # toggle
+#   omarec on | off                 # start / stop the overlay
+#   omarec resize <p>               # small|medium|large|smaller|larger
+#   omarec orientation <p>          # portrait|landscape
+#   omarec rounding <px>            # 0..30 corner radius (0 = square)
+#   omarec devices                  # list cameras
+#   omarec pick-device              # choose a camera (menu) and remember it
+#   omarec status                   # running | stopped
+#   omarec get-size|get-orientation|get-rounding|get-device
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONF_FILE="$PLUGIN_DIR/omarec.conf"
+
+read_config() {
+  local key="$1" default="${2:-}"
+  local value="$default"
+  if [[ -f $CONF_FILE ]]; then
+    while IFS='=' read -r k v; do
+      [[ $k == "$key" ]] && value="$v"
+    done < <(sed 's/\r//g' "$CONF_FILE")
+  fi
+  printf '%s' "$value"
+}
+
+write_config() {
+  local key="$1" value="$2"
+  local tmp="${CONF_FILE}.tmp"
+  : >"$tmp"
+  if [[ -f $CONF_FILE ]]; then
+    while IFS='=' read -r k v; do
+      [[ -n $k && $k == \#* ]] && printf '%s\n' "$k=$v" >>"$tmp"
+      [[ -n $k && $k != \#* && $k != "$key" ]] && printf '%s=%s\n' "$k" "$v" >>"$tmp"
+    done < <(sed 's/\r//g' "$CONF_FILE" 2>/dev/null)
+  fi
+  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  mv "$tmp" "$CONF_FILE"
+}
+
+overlay_active() {
+  command -v hyprctl >/dev/null 2>&1 || return 1
+  hyprctl clients -j 2>/dev/null | jq -e 'any(.[]; .title == "WebcamOverlay")' >/dev/null 2>&1
+}
+
+webcam_device() {
+  local dev
+  dev="$(read_config device "")"
+  if [[ -n $dev && -e $dev ]]; then
+    printf '%s' "$dev"
+    return
+  fi
+  if command -v omarchy-capture-webcam-list >/dev/null 2>&1; then
+    omarchy-capture-webcam-list | sed -n '1s/[[:space:]].*//p'
+  fi
+}
+
+list_devices() {
+  if command -v omarchy-capture-webcam-list >/dev/null 2>&1; then
+    omarchy-capture-webcam-list
+  else
+    v4l2-ctl --list-devices 2>/dev/null | awk '
+      /^\S/ { name=$0 }
+      /^[[:space:]]+\/dev\/video/ { print $1 "  " name }
+    '
+  fi
+}
+
+overlay_capture_options() {
+  local device="$1"
+  local res cap="framerate=30"
+  local formats
+  formats="$(v4l2-ctl --list-formats-ext -d "$device" 2>/dev/null)"
+  for res in 640x360 1280x720 1920x1080; do
+    if [[ $formats == *"$res"* ]]; then
+      cap="video_size=$res,$cap"
+      break
+    fi
+  done
+  printf '%s' "$cap"
+}
+
+# Geometry presets, scaled from the monitor height like Omarchy's own presets so
+# the overlay keeps the same share of the screen on any resolution. Width and
+# height stay in 8:9 (portrait) or 16:9 (landscape).
+geom_width() { # orientation size
+  case "$1-$2" in
+    portrait-small) echo "monitor_h*4/25" ;;
+    portrait-medium) echo "monitor_h*2/9" ;;
+    portrait-large) echo "monitor_h*3/10" ;;
+    landscape-small) echo "monitor_h*4/9" ;;
+    landscape-medium) echo "monitor_h*2/3" ;;
+    landscape-large) echo "monitor_h*4/5" ;;
+  esac
+}
+geom_height() { # orientation size
+  case "$1-$2" in
+    portrait-small) echo "monitor_h*9/50" ;;
+    portrait-medium) echo "monitor_h/4" ;;
+    portrait-large) echo "monitor_h*27/80" ;;
+    landscape-small) echo "monitor_h/4" ;;
+    landscape-medium) echo "monitor_h*3/8" ;;
+    landscape-large) echo "monitor_h*9/20" ;;
+  esac
+}
+
+# Apply the full set of window rules for one overlay app id. Rounding is baked
+# into the app id too, so a change of any setting always yields a fresh app id
+# and rule — no stale/duplicate-rule conflicts, ever.
+apply_geometry() { # orientation size rounding
+  local orientation="$1" size="$2" rounding="$3"
+  local app_id="omarec-${orientation}-${size}-r${rounding}"
+  local w h
+  w="$(geom_width "$orientation" "$size")"
+  h="$(geom_height "$orientation" "$size")"
+  hyprctl eval "hl.window_rule({
+    match = { class = '^${app_id}\$', title = '^WebcamOverlay\$' },
+    float = true,
+    pin = true,
+    no_initial_focus = true,
+    no_focus = true,
+    no_dim = true,
+    no_border = true,
+    tag = '-default-opacity',
+    opacity = '1 1',
+    rounding = ${rounding},
+    size = { '${w}', '${h}' },
+    move = { 'monitor_w-${w}-40', 'monitor_h-${h}-40' }
+  })" >/dev/null 2>&1
+  printf '%s' "$app_id"
+}
+
+start_overlay() {
+  local device="${1:-}"
+  local size orientation rounding app_id vf
+  size="$(read_config size medium)"
+  case "$size" in small | medium | large) ;; *) size="medium" ;; esac
+  orientation="$(read_config orientation portrait)"
+  case "$orientation" in portrait | landscape) ;; *) orientation="portrait" ;; esac
+  rounding="$(read_config rounding 12)"
+  [[ $rounding =~ ^[0-9]+$ ]] && (( rounding > 30 )) && rounding=30
+  [[ $rounding =~ ^[0-9]+$ ]] || rounding=12
+
+  if [[ -z $device ]]; then
+    device="$(webcam_device)"
+    if [[ -z $device ]]; then
+      omarchy-notification-send "No webcam devices found" -u critical -t 3000 2>/dev/null || true
+      return 1
+    fi
+  fi
+
+  stop_overlay
+
+  local capture_options
+  capture_options="$(overlay_capture_options "$device")"
+
+  if [[ $orientation == landscape ]]; then
+    vf='--vf=lavfi=[crop=iw:iw*9/16]'
+  else
+    vf='--vf=lavfi=[crop=ih*8/9:ih]'
+  fi
+
+  app_id="$(apply_geometry "$orientation" "$size" "$rounding")"
+
+  mpv "av://v4l2:$device" \
+    --profile=low-latency --untimed --no-cache \
+    --demuxer-lavf-o="$capture_options" \
+    "$vf" \
+    --title="WebcamOverlay" --wayland-app-id="$app_id" \
+    --no-border --no-audio --no-osc --osd-level=0 \
+    --really-quiet &>/dev/null &
+
+  local waited=0
+  while ((waited < 40)) && ! overlay_active; do
+    sleep 0.05
+    ((waited++))
+  done
+
+  return 0
+}
+
+stop_overlay() {
+  pkill -f "av://v4l2:" 2>/dev/null || true
+}
+
+toggle_overlay() {
+  if overlay_active; then
+    stop_overlay
+    omarchy-notification-send "Camera overlay off" 2>/dev/null || true
+  else
+    start_overlay
+    omarchy-notification-send "Camera overlay on" 2>/dev/null || true
+  fi
+}
+
+usage() {
+  echo "Usage: omarec [on|off|toggle|resize|orientation|rounding|devices|pick-device|status|get-size|get-orientation|get-rounding|get-device]" >&2
+}
+
+case "${1:-toggle}" in
+on | start)
+  start_overlay "${2:-}"
+  ;;
+off | stop)
+  stop_overlay
+  ;;
+toggle)
+  toggle_overlay
+  ;;
+resize)
+  size="${2:-medium}"
+  case "$size" in small | medium | large) ;; *)
+    echo "size must be small|medium|large" >&2
+    exit 1
+    ;;
+  esac
+  write_config size "$size"
+  if overlay_active; then start_overlay; fi
+  ;;
+smaller)
+  cur="$(read_config size medium)"
+  case "$cur" in small) size=small ;; medium) size=small ;; large) size=medium ;; *) size=small ;; esac
+  write_config size "$size"
+  if overlay_active; then start_overlay; fi
+  ;;
+larger)
+  cur="$(read_config size medium)"
+  case "$cur" in small) size=medium ;; medium) size=large ;; large) size=large ;; *) size=medium ;; esac
+  write_config size "$size"
+  if overlay_active; then start_overlay; fi
+  ;;
+orientation)
+  orientation="${2:-}"
+  case "$orientation" in portrait | landscape) ;; *)
+    echo "orientation must be portrait|landscape" >&2
+    exit 1
+    ;;
+  esac
+  write_config orientation "$orientation"
+  if overlay_active; then start_overlay; fi
+  ;;
+rounding)
+  rounding="${2:-}"
+  [[ $rounding =~ ^[0-9]+$ ]] || { echo "rounding must be a whole number of pixels (0..30)" >&2; exit 1; }
+  ((rounding > 30)) && rounding=30
+  write_config rounding "$rounding"
+  if overlay_active; then start_overlay; fi
+  ;;
+devices)
+  list_devices
+  ;;
+pick-device)
+  mapfile -t devices < <(list_devices)
+  if (( ${#devices[@]} == 0 )); then
+    echo "No webcam devices found" >&2
+    exit 1
+  fi
+  if (( ${#devices[@]} == 1 )); then
+    chosen="${devices[0]%%[[:space:]]*}"
+  else
+    chosen=$(omarchy-menu-select "Select Camera" "${devices[@]}" -- --width 520 --maxheight 520) || exit 1
+    chosen="${chosen%%[[:space:]]*}"
+  fi
+  write_config device "$chosen"
+  printf '%s\n' "$chosen"
+  ;;
+status)
+  if overlay_active; then printf 'running\n'; else printf 'stopped\n'; fi
+  ;;
+get-device)
+  printf '%s\n' "$(webcam_device)"
+  ;;
+get-size)
+  size="$(read_config size medium)"
+  case "$size" in small | medium | large) printf '%s\n' "$size" ;; *) printf 'medium\n' ;; esac
+  ;;
+get-orientation)
+  orientation="$(read_config orientation portrait)"
+  case "$orientation" in portrait | landscape) printf '%s\n' "$orientation" ;; *) printf 'portrait\n' ;; esac
+  ;;
+get-rounding)
+  rounding="$(read_config rounding 12)"
+  [[ $rounding =~ ^[0-9]+$ ]] || rounding=12
+  printf '%s\n' "$rounding"
+  ;;
+*)
+  usage
+  exit 1
+  ;;
+esac

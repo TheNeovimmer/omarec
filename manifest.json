@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "omarec",
+  "name": "OMARec",
+  "version": "1.0.0",
+  "author": "theneovimmer",
+  "description": "Floating live webcam overlay for screen-sharing / meetings. No recording.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OMARec",
+    "description": "Turn on a floating camera overlay (like a screen-record webcam but without recording) and pick which camera to use.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
