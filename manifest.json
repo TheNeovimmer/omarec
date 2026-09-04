@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "omarec",
-  "name": "OMARec",
-  "version": "1.0.0",
+  "name": "OMARec Studio",
+  "version": "2.0.0",
   "author": "theneovimmer",
-  "description": "Floating live webcam overlay for screen-sharing / meetings. No recording.",
+  "description": "A private, configurable live webcam overlay built for polished screen-sharing and meetings. No recording.",
   "kinds": [
     "service",
     "bar-widget"
@@ -14,8 +14,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "OMARec",
-    "description": "Turn on a floating camera overlay (like a screen-record webcam but without recording) and pick which camera to use.",
+    "displayName": "OMARec Studio",
+    "description": "Run a private live camera overlay for meetings; choose the camera, shape, size, rounding, and screen corner.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

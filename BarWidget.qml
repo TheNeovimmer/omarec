@@ -6,34 +6,28 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// Bar entry point for OMARec: a camera pill that lights up when the floating
-// live camera overlay is up, plus the control panel behind it. The UI follows
-// the same design language as Omarchy's first-party plugins (on-air): a
-// BorderSurface chip in the bar, a PanelHero with a toggle, action buttons
-// under the hero, and sectioned rows. Instanced once per monitor, so it owns
-// no Process, Timer or IpcHandler — every action goes through the single
-// Service instance (bar.shell.serviceFor(moduleName)), null-guarded at every
-// access (it is transiently null during load and after each hot reload).
+// Bar entry point for OMARec: a camera icon that pulses when the live camera
+// overlay is active, plus a compact Studio control panel. The UI is deliberately
+// distinct from on-air: no PanelHero, no toggle switch — instead a minimal
+// header row with a start/stop button and grouped appearance/position grids.
 Panel {
   id: root
 
-  // The service registers the "omarec" IPC target; the Panel base must not
-  // register a second one per monitor.
   ipcTarget: ""
   manageIpc: false
 
   readonly property var service: bar && bar.shell && moduleName ? bar.shell.serviceFor(moduleName) : null
 
-  // ---- service state, always defined so the UI never reads a null -------
+  // ---- service state (always defined so the UI never reads null) -------
   readonly property bool onAir: service ? service.active : false
   readonly property string camera: service ? service.camera : ""
   readonly property string size: service ? service.size : "medium"
   readonly property string orientation: service ? service.orientation : "portrait"
   readonly property string rounding: service ? service.rounding : "12"
+  readonly property string position: service ? service.position : "bottom-right"
   readonly property bool busy: service ? service.busy : false
   readonly property bool picking: service ? service.picking : false
 
-  // Always visible: the bar entry is the only way to reach the overlay.
   readonly property bool shown: true
   readonly property bool visibleInBar: root.shown || root.opened
   visible: root.visibleInBar
@@ -50,49 +44,42 @@ Panel {
   readonly property color hoverFill: Style.hoverFillFor(foreground, accent)
   readonly property color selectedFill: Style.selectedFillFor(foreground, accent)
 
-  // ---- bar visuals (on-air style pill) --------------------------------
-  // Live dot + camera glyph + a "LIVE" pill in that order; idle is the glyph.
-  readonly property bool pillMode: root.onAir
-  readonly property string pillText: "LIVE"
-  readonly property color pillFill: root.degraded ? root.barDim : root.urgent
-  readonly property color pillForeground: Color.background
-  readonly property real pillWidth: Math.round(pillMetrics.width) + Style.space(34)
-
-  // Degraded = the CLI cannot detect anything (service present but unusable).
+  // ---- bar icon (distinct from on-air: glyph + live dot) ---------------
   readonly property bool degraded: !root.service
 
   readonly property string tooltip: {
     if (!root.service) return "OMARec — service not loaded"
-    if (root.onAir) return "OMARec — camera overlay live on " + (root.camera || "default")
-    return "OMARec — camera overlay off"
+    if (root.onAir) return "OMARec — live on " + (root.camera || "default")
+    return "OMARec — off"
   }
 
-  // ---- hero ------------------------------------------------------------
+  // ---- panel -----------------------------------------------------------
   readonly property string heroMeta: {
     if (!root.service) return "Service not loaded"
     if (root.onAir) return "Live · " + (root.camera || "default camera")
-    return "Off air"
+    return "Ready · " + root.orientation + " · " + root.size
   }
-  readonly property string statusDetail: busy
-    ? "Working…"
-    : (onAir ? "On" : "Off")
 
-  readonly property string toggleHint: root.onAir ? "Turn camera overlay off" : "Turn camera overlay on"
-
-  // ---- panel cursor ----------------------------------------------------
+  // ---- cursor ----------------------------------------------------------
   property bool cursorActive: false
   property int cursorIndex: 0
 
-  readonly property var nav: ["hero", "toggle", "camera-pick", "size-small", "size-medium", "size-large",
-    "orient-portrait", "orient-landscape", "rounding-0", "rounding-8", "rounding-16", "rounding-24"]
+  readonly property var nav: [
+    "toggle", "camera-pick",
+    "size-small", "size-medium", "size-large",
+    "orient-portrait", "orient-landscape",
+    "rounding-0", "rounding-8", "rounding-16",
+    "rounding-20",
+    "position-top-left", "position-top-right",
+    "position-bottom-left", "position-bottom-right"
+  ]
 
   function navIndex(kind) { return root.nav.indexOf(kind) }
   function hasCursorAt(kind) { return root.cursorActive && root.navIndex(kind) === root.cursorIndex }
   function moveCursor(dy) {
     root.cursorActive = true
     var n = root.nav.length
-    var next = Math.max(0, Math.min(n - 1, root.cursorIndex + dy))
-    root.cursorIndex = next
+    root.cursorIndex = Math.max(0, Math.min(n - 1, root.cursorIndex + dy))
   }
   function setCursor(kind) {
     var i = root.navIndex(kind)
@@ -102,20 +89,19 @@ Panel {
   }
   function activateCursor() {
     var kind = root.nav[root.cursorIndex]
-    if (kind === "hero" || kind === "toggle") root.toggle()
+    if (kind === "toggle") root.toggle()
     else if (kind === "camera-pick") root.pickCamera()
-    else if (kind === "size-small") root.applySize("small")
-    else if (kind === "size-medium") root.applySize("medium")
-    else if (kind === "size-large") root.applySize("large")
-    else if (kind === "orient-portrait") root.applyOrientation("portrait")
-    else if (kind === "orient-landscape") root.applyOrientation("landscape")
-    else if (kind.indexOf("rounding-") === 0) root.applyRounding(kind.slice("rounding-".length))
+    else if (kind.indexOf("size-") === 0) root.applySize(kind.slice(5))
+    else if (kind.indexOf("orient-") === 0) root.applyOrientation(kind.slice(7))
+    else if (kind.indexOf("rounding-") === 0) root.applyRounding(kind.slice(9))
+    else if (kind.indexOf("position-") === 0) root.applyPosition(kind.slice(9))
   }
 
   function toggle() { if (root.service) root.service.toggle() }
   function applySize(value) { if (root.service) root.service.setSize(value) }
   function applyOrientation(value) { if (root.service) root.service.setOrientation(value) }
   function applyRounding(value) { if (root.service && /^[0-9]+$/.test(value)) root.service.setRounding(value) }
+  function applyPosition(value) { if (root.service) root.service.setPosition(value) }
   function pickCamera() { if (root.service) root.service.pickCamera() }
 
   onOpenedChanged: if (opened) {
@@ -126,77 +112,42 @@ Panel {
     Qt.callLater(function () { keyCatcher.forceActiveFocus() })
   }
 
-  TextMetrics {
-    id: pillMetrics
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-    font.bold: true
-    font.letterSpacing: 1.2
-    text: root.pillText
-  }
-
+  // ---- bar icon --------------------------------------------------------
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
     tooltipText: root.tooltip
-    slotSize: root.pillMode ? root.pillWidth : Style.bar.iconSlot
-    opticalSize: root.pillMode ? root.pillWidth : Style.bar.iconCanvas
+    slotSize: Style.bar.iconSlot
+    opticalSize: Style.bar.iconCanvas
 
     iconComponent: Component {
       Item {
         anchors.fill: parent
 
-        // LIVE pill (only while the overlay is up), mirroring on-air's pill.
-        BorderSurface {
-          anchors.centerIn: parent
-          visible: root.pillMode
-          implicitWidth: root.pillWidth
-          implicitHeight: Math.round(pillMetrics.height) + Style.space(6)
-          radius: Style.cornerRadius > 0 ? implicitHeight / 2 : 0
-          color: root.pillFill
-          borderSpec: Border.none()
-
-          Row {
-            anchors.centerIn: parent
-            spacing: Style.space(6)
-
-            Rectangle {
-              anchors.verticalCenter: parent.verticalCenter
-              width: Style.space(6)
-              height: width
-              radius: width / 2
-              color: root.pillForeground
-            }
-
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: "󰻂"
-              color: root.pillForeground
-              font.family: root.fontFamily
-              font.pixelSize: Style.bar.iconFont
-            }
-
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.pillText
-              color: root.pillForeground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-            }
-          }
-        }
-
-        // Idle: a neutral camera glyph (dimmed if degraded/unavailable).
+        // Camera glyph — green when live, dimmed when off or degraded.
         Text {
           anchors.centerIn: parent
-          visible: !root.pillMode
-          text: "󰻂"
-          color: root.degraded ? root.barDim : root.barForeground
+          text: "󰅱"
+          color: root.onAir
+            ? root.accent
+            : (root.degraded ? root.barDim : root.barForeground)
           font.family: root.fontFamily
           font.pixelSize: Style.bar.iconFont
+          opacity: root.onAir ? 1.0 : (root.degraded ? 0.4 : 0.85)
+        }
+
+        // Live indicator dot (bottom-right of the glyph).
+        Rectangle {
+          visible: root.onAir
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          anchors.rightMargin: Style.space(2)
+          anchors.bottomMargin: Style.space(2)
+          width: Style.space(6)
+          height: width
+          radius: width / 2
+          color: root.accent
         }
       }
     }
@@ -211,6 +162,7 @@ Panel {
     }
   }
 
+  // ---- panel -----------------------------------------------------------
   KeyboardPanel {
     id: panel
     anchorItem: button
@@ -218,8 +170,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
+    contentWidth: panel.fittedContentWidth(Style.space(360))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(540))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -246,64 +198,64 @@ Panel {
         Column {
           id: column
           width: panelFlick.width
-          spacing: Style.space(12)
+          spacing: Style.space(10)
 
-          // ------------------------------------------------------- hero
+          // ---- header (no PanelHero, no toggle switch) ----
           Item {
-            id: heroWrap
             width: parent.width
-            implicitHeight: hero.implicitHeight
+            implicitHeight: headerRow.implicitHeight + Style.space(8)
 
-            readonly property bool ringVisible: root.hasCursorAt("hero")
-            readonly property bool switchChecked: root.onAir
-            readonly property string hint: root.toggleHint
-            function focusHero() { root.setCursor("hero") }
-            function activate() { root.toggle() }
+            RowLayout {
+              id: headerRow
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.topMargin: Style.space(4)
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(10)
+              spacing: Style.space(8)
 
-            PanelHero {
-              id: hero
-              width: parent.width
-              title: "OMARec"
-              meta: root.heroMeta
-              detail: root.statusDetail
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              iconOpacity: root.onAir ? 1.0 : 0.5
+              Column {
+                Layout.fillWidth: true
+                spacing: Style.space(2)
 
-              iconComponent: Component {
-                Rectangle {
-                  implicitWidth: Style.font.display
-                  implicitHeight: Style.font.display
-                  radius: width / 2
-                  color: root.onAir ? root.urgent : "transparent"
-                  border.width: Math.max(1, Style.space(2))
-                  border.color: root.onAir ? root.urgent : root.dim
+                Text {
+                  text: "OMARec"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+
+                Text {
+                  text: root.heroMeta
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                  width: parent.width
                 }
               }
 
-              trailingControl: Component {
-                ToggleSwitch {
-                  id: airSwitch
-                  checked: heroWrap.switchChecked
-                  hasCursor: heroWrap.ringVisible
-                  foreground: hero.foreground
-                  onHovered: function (on) { if (on) heroWrap.focusHero() }
-                  onToggled: heroWrap.activate()
-
-                  PanelToolTip {
-                    visible: airSwitch.containsMouse
-                    text: heroWrap.hint
-                    fontFamily: hero.fontFamily
-                  }
-                }
+              Button {
+                text: root.onAir ? "Stop" : "Start"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                enabled: !root.picking
+                opacity: enabled ? 1.0 : 0.4
+                hasCursor: root.hasCursorAt("toggle")
+                onHovered: function (on) { if (on) root.setCursor("toggle") }
+                onClicked: root.toggle()
               }
             }
           }
 
-          // Status / warning line, exactly like on-air's degraded message.
+          // Warning line.
           Text {
             visible: text !== ""
-            width: parent.width
+            width: parent.width - Style.space(20)
+            x: Style.space(10)
             text: {
               if (!root.service) return "The OMARec service is not loaded."
               if (root.picking) return "Choose a camera…"
@@ -315,59 +267,25 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          // ----------------------------------------------------- actions
           PanelSeparator { foreground: root.foreground }
 
-          Row {
-            width: column.width
-            spacing: Style.space(8)
-            leftPadding: Style.space(10)
-
-            Button {
-              text: root.onAir ? "Camera off" : "Camera on"
-              iconText: root.onAir ? "󰅺" : "󰅱"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              bordered: true
-              enabled: !root.picking
-              opacity: enabled ? 1.0 : 0.4
-              hasCursor: root.hasCursorAt("hero")
-              onHovered: function (on) { if (on) root.setCursor("hero") }
-              onClicked: root.toggle()
-            }
-
-            Button {
-              text: "Pick camera"
-              iconText: "󰅙"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              bordered: true
-              enabled: !root.picking
-              opacity: enabled ? 1.0 : 0.4
-              hasCursor: root.hasCursorAt("camera-pick")
-              onHovered: function (on) { if (on) root.setCursor("camera-pick") }
-              onClicked: root.pickCamera()
-            }
-          }
-
-          // ------------------------------------------------------ camera
+          // ---- device ----
           PanelSectionHeader {
-            text: "CAMERA"
+            text: "DEVICE"
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
 
           CursorSurface {
-            id: cameraRow
             width: column.width
             hasCursor: root.hasCursorAt("camera-pick")
             foreground: root.foreground
             fill: root.hoverFill
             currentFill: root.selectedFill
-            implicitHeight: cameraInner.implicitHeight + Style.spacing.rowPaddingX
+            implicitHeight: camInner.implicitHeight + Style.spacing.rowPaddingX
 
             RowLayout {
-              id: cameraInner
+              id: camInner
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
@@ -385,7 +303,7 @@ Panel {
 
               Text {
                 Layout.fillWidth: true
-                text: root.camera === "" ? "None" : root.camera
+                text: root.camera === "" ? "None selected" : root.camera
                 elide: Text.ElideMiddle
                 color: root.foreground
                 font.family: root.fontFamily
@@ -407,71 +325,51 @@ Panel {
             }
           }
 
-          // --------------------------------------------------------- size
+          // ---- appearance ----
           PanelSectionHeader {
-            text: "SIZE"
+            text: "APPEARANCE"
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
 
-          Row {
-            width: column.width
-            spacing: Style.space(8)
-            leftPadding: Style.space(10)
+          // Size + Orientation in a compact 2-column grid.
+          Grid {
+            width: column.width - Style.space(20)
+            x: Style.space(10)
+            columns: 2
+            spacing: Style.space(6)
 
             Repeater {
-              model: ["small", "medium", "large"]
+              model: [
+                { label: "Small", size: "small" },
+                { label: "Medium", size: "medium" },
+                { label: "Large", size: "large" },
+                { label: "Portrait", orient: "portrait" },
+                { label: "Landscape", orient: "landscape" }
+              ]
 
               Button {
-                required property string modelData
-                text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
+                required property var modelData
+                width: (parent.width - parent.columnSpacing) / 2
+                text: modelData.label
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 bordered: true
-                selected: root.size === modelData
-                hasCursor: root.hasCursorAt("size-" + modelData)
-                onHovered: function (on) { if (on) root.setCursor("size-" + modelData) }
-                onClicked: root.applySize(modelData)
+                selected: modelData.size
+                  ? root.size === modelData.size
+                  : root.orientation === modelData.orient
+                hasCursor: modelData.size
+                  ? root.hasCursorAt("size-" + modelData.size)
+                  : root.hasCursorAt("orient-" + modelData.orient)
+                onHovered: function (on) {
+                  if (on) root.setCursor(modelData.size ? "size-" + modelData.size : "orient-" + modelData.orient)
+                }
+                onClicked: modelData.size ? root.applySize(modelData.size) : root.applyOrientation(modelData.orient)
               }
             }
           }
 
-          // --------------------------------------------------- orientation
-          PanelSectionHeader {
-            text: "ORIENTATION"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Row {
-            width: column.width
-            spacing: Style.space(8)
-            leftPadding: Style.space(10)
-
-            Button {
-              text: "Portrait"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              bordered: true
-              selected: root.orientation === "portrait"
-              hasCursor: root.hasCursorAt("orient-portrait")
-              onHovered: function (on) { if (on) root.setCursor("orient-portrait") }
-              onClicked: root.applyOrientation("portrait")
-            }
-
-            Button {
-              text: "Landscape"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              bordered: true
-              selected: root.orientation === "landscape"
-              hasCursor: root.hasCursorAt("orient-landscape")
-              onHovered: function (on) { if (on) root.setCursor("orient-landscape") }
-              onClicked: root.applyOrientation("landscape")
-            }
-          }
-
-          // ------------------------------------------------------- rounding
+          // Rounding
           PanelSectionHeader {
             text: "ROUNDING"
             foreground: root.foreground
@@ -480,15 +378,15 @@ Panel {
 
           Row {
             width: column.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
             leftPadding: Style.space(10)
 
             Repeater {
-              model: ["0", "8", "16", "24"]
+              model: ["0", "8", "16", "20"]
 
               Button {
                 required property string modelData
-                text: modelData === "0" ? "Square" : modelData + "px"
+                text: modelData === "0" ? "Off" : modelData + "px"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 bordered: true
@@ -500,13 +398,57 @@ Panel {
             }
           }
 
-          // --------------------------------------------------- shortcuts
+          Text {
+            width: column.width - Style.space(20)
+            x: Style.space(10)
+            text: "Hyprland supports up to 20px."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          // ---- position ----
+          PanelSectionHeader {
+            text: "POSITION"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Grid {
+            width: column.width - Style.space(20)
+            x: Style.space(10)
+            columns: 2
+            spacing: Style.space(6)
+
+            Repeater {
+              model: [
+                { value: "top-left", label: "Top left" },
+                { value: "top-right", label: "Top right" },
+                { value: "bottom-left", label: "Bottom left" },
+                { value: "bottom-right", label: "Bottom right" }
+              ]
+
+              Button {
+                required property var modelData
+                width: (parent.width - parent.columnSpacing) / 2
+                text: modelData.label
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                selected: root.position === modelData.value
+                hasCursor: root.hasCursorAt("position-" + modelData.value)
+                onHovered: function (on) { if (on) root.setCursor("position-" + modelData.value) }
+                onClicked: root.applyPosition(modelData.value)
+              }
+            }
+          }
+
           PanelSeparator { foreground: root.foreground }
 
           Text {
             width: column.width - Style.space(20)
             x: Style.space(10)
-            text: "Right-click the bar pill to toggle quickly. The overlay mirrors screen-recording's — live webcam only, never records."
+            text: "Right-click the bar icon for a quick toggle. OMARec is a live camera overlay only — it never records."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

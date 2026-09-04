@@ -1,33 +1,49 @@
-# OMARec
+# OMARec Studio
 
-A fully self-contained [Omarchy](https://omarchy.org) bar-widget plugin that shows a
-**floating live webcam overlay** — the same idea as `omarchy screenrecord --with-webcam`,
-minus the recording — with user-configurable **size**, **orientation**
-(portrait/landscape) and **corner rounding**.
+A polished, fully self-contained [Omarchy](https://omarchy.org) bar-widget plugin for
+sharing your screen in meetings with a **floating live webcam overlay**. It provides the
+presence of a screen-recording camera bubble, without recording anything.
 
-It adds a camera glyph to the bar. Click it to open a panel where you can toggle the
-overlay, pick which webcam to remember, and tune the size / orientation / rounding.
+It adds a dedicated video-camera icon to the bar. Click it to open a focused Studio panel
+where you can start the overlay, pick a webcam, and tune its size, framing, rounding, and
+screen position. Every setting is remembered inside the plugin.
 
 ## What it does
 
-- Toggles a floating, always-on-top camera preview (bottom-right corner by default).
-- Lets you choose which webcam to use, its size (small/medium/large), its orientation
-  (portrait 8:9 or landscape 16:9), and its corner rounding (0/8/16/24 px).
-- Uses its **own Wayland app id** (`omarec-<orientation>-<size>-r<rounding>`) and applies
+- Toggles a floating, always-on-top camera preview (bottom-right by default).
+- Lets you choose which webcam to use, the overlay size (small/medium/large), framing
+  (portrait 8:9 or landscape 16:9), corner rounding (0/8/16/20 px), and any screen corner.
+- Restarts the overlay safely when you change a visual setting, so the new result is shown
+  immediately instead of waiting for the next meeting.
+- Uses its **own Wayland app id** (`omarec-<orientation>-<size>-r<rounding>-<position>`) and applies
   its own geometry via a runtime `hl.window_rule` — so it needs **zero changes** to
   `hyprland.lua` or any Omarchy config, and it **never collides with or leaks into**
   Omarchy's screen-recording `WebcamOverlay`.
 
-## Install / enable
+## Install, enable, and remove
 
-1. Put this folder at `~/.config/omarchy/plugins/omarec/`
-   (or the community-plugins directory used by your Omarchy setup).
-2. Restart the shell, or it is picked up on reload.
-3. Add the widget to the bar, e.g. in `~/.config/omarchy/shell.json`:
+For a git-hosted copy, Omarchy installs and enables it in one command:
 
-   ```json
-   "right": [ { "id": "omarec" } ]
-   ```
+```sh
+omarchy plugin add <plugin-git-url> --enable --yes
+```
+
+For this local checkout, validate it, then enable it in the right side of the bar:
+
+```sh
+omarchy plugin validate ~/.config/omarchy/plugins/omarec
+omarchy plugin enable omarec right
+```
+
+To remove it completely, turn off the overlay and let Omarchy remove the plugin:
+
+```sh
+~/.config/omarchy/plugins/omarec/bin/omarec off
+omarchy plugin remove omarec --yes
+```
+
+There are no system configuration changes to undo. Removing the plugin also removes its
+saved camera settings because its state file lives in the plugin directory.
 
 ## CLI
 
@@ -39,26 +55,27 @@ omarec on                   # start overlay
 omarec off                  # stop overlay
 omarec resize S             # small | medium | large | smaller | larger
 omarec orientation O        # portrait | landscape
-omarec rounding PX          # 0..30 corner radius in pixels
+omarec rounding PX          # 0..20 corner radius in pixels
+omarec position CORNER      # top-left | top-right | bottom-left | bottom-right
 omarec devices              # list webcams
 omarec pick-device          # choose & remember a webcam
 omarec status               # running | stopped
-omarec get-size|get-orientation|get-rounding|get-device
+omarec get-size|get-orientation|get-rounding|get-position|get-device
 ```
 
-Preferences (remembered camera, size, orientation, rounding) are stored in
+Preferences (remembered camera, size, orientation, rounding, and position) are stored in
 `omarec.conf` **inside** this plugin folder, so the plugin owns all of its state.
 
 ## Panel & controls
 
-The widget uses Omarchy's native panel kit (`qs.Ui`): a `Panel` bar-widget with a
-`PanelHero` (toggle switch), an action row (Camera on/off, Pick camera), and sectioned
-rows for camera, size, orientation and rounding — styled identically to Omarchy's other
-panels.
+The widget uses Omarchy's native panel kit (`qs.Ui`) with a concise Studio header, a live
+state toggle, direct camera selection, and grouped controls for overlay size, orientation,
+rounding, and screen position. It feels native to Omarchy while keeping meeting controls
+visible at a glance.
 
 - **Left-click** the bar icon to open/close the panel.
 - **Right-click** the bar icon to toggle the overlay.
-- The bar glyph shows a **LIVE** pill with a faint FPV shake while the overlay is up.
+- The bar icon becomes a clear **LIVE** pill while the overlay is up.
 - In the panel, navigate with arrow keys and activate with Enter; the mouse works too.
   (There are no keyboard shortcuts — control is via the bar, the panel, or the CLI.)
 
@@ -70,21 +87,22 @@ owning all processes/timers/IPC — the `omarec` IPC target: `on`, `off`, `toggl
 
 ## Performance
 
-The service polls only a single cheap `status` probe on a generous timer (3s). Camera,
-size, orientation and rounding labels refresh lazily — when the panel opens or an action
-lands — so idle CPU stays near zero and only one process is spawned per tick.
+The service polls only a single cheap `status` probe on a generous timer (3s). Camera and
+overlay-setting labels refresh lazily — when the panel opens or an action lands — so idle
+CPU stays near zero and only one process is spawned per tick.
 
-## Isolation
+## Isolation and privacy
 
 - **Zero edits to Omarchy defaults.** `hyprland.lua`, `shell.qml`, etc. are never
   touched. Rather than reusing Omarchy's `WebcamOverlay` rules, the plugin owns its
   overlay geometry through its own app id and a runtime `hl.window_rule`, so nothing it
   does affects Omarchy's own screen-recording overlay (and vice-versa).
 - **Self-contained state.** The only file the plugin writes is `omarec.conf` inside
-  its own folder (camera + size + orientation + rounding). No files are written to
+  its own folder (camera + size + orientation + rounding + position). No files are written to
   `/tmp`, the runtime dir, or Omarchy's config dir.
-- **Does not own shared resources.** It never records, and it stops its own mpv
-  instance only — it does not kill or modify any other process's state.
+- **Does not own shared resources.** It never records, and it stops only the mpv process
+  carrying OMARec's private Wayland app-id — other webcam previews and Omarchy's recorder
+  overlay are left alone.
 
 ## Lightweight
 

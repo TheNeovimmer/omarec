@@ -32,6 +32,7 @@ QtObject {
   readonly property string size: _size
   readonly property string orientation: _orientation
   readonly property string rounding: _rounding
+  readonly property string position: _position
   // True while a picker menu is up; the panel can dim its Change button.
   readonly property bool picking: _picking
   readonly property bool busy: statusProc.running || actionProc.running
@@ -51,6 +52,7 @@ QtObject {
   property string _size: "medium"
   property string _orientation: "portrait"
   property string _rounding: "12"
+  property string _position: "bottom-right"
   property bool _picking: false
 
   // When the overlay state changed since we last read it, nudge every widget
@@ -72,13 +74,14 @@ QtObject {
       waitForEnd: true
       onStreamFinished: {
         var next = text.trim() === "running"
+        var wasActive = root._state === "running"
         root._state = next ? "running" : "stopped"
-        if (next !== root.active) root.overlayChanged(next)
+        if (next !== wasActive) root.overlayChanged(next)
       }
     }
   }
 
-  // ---- remembered device / size labels (refreshed lazily) ----
+  // ---- remembered settings (refreshed lazily) ----
   // The device and preset only change through explicit user action (pick / set),
   // so unlike status they are NOT polled every tick — that keeps the steady-state
   // cost of this service to a single cheap `status` process per poll.
@@ -101,6 +104,11 @@ QtObject {
     id: roundingProc
     command: [root.cliPath, "get-rounding"]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root._rounding = text.trim() || "12" }
+  }
+  property Process positionProc: Process {
+    id: positionProc
+    command: [root.cliPath, "get-position"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root._position = text.trim() || "bottom-right" }
   }
 
   // ---- one-shot actions (on/off/toggle/resize) ----
@@ -145,7 +153,7 @@ QtObject {
 
   // ---------------------------------------------------------- public API
   // Always refreshes the cheap status; optionally also refreshes the lazy
-  // camera/size labels (panel open, pick done, resize done).
+  // camera and setting labels (panel open, camera pick done, or setting change).
   function refresh(full) {
     if (!statusProc.running) statusProc.running = true
     if (full) {
@@ -153,6 +161,7 @@ QtObject {
       if (!sizeProc.running) sizeProc.running = true
       if (!orientationProc.running) orientationProc.running = true
       if (!roundingProc.running) roundingProc.running = true
+      if (!positionProc.running) positionProc.running = true
     }
   }
 
@@ -183,6 +192,14 @@ QtObject {
     if (value === root._rounding) return
     root._rounding = value
     root.runAction(["rounding", value])
+  }
+
+  function setPosition(position) {
+    var value = String(position || "")
+    if (["top-left", "top-right", "bottom-left", "bottom-right"].indexOf(value) < 0) return
+    if (value === root._position) return
+    root._position = value
+    root.runAction(["position", value])
   }
 
   function pickCamera() {
@@ -252,6 +269,13 @@ QtObject {
     }
     function setRounding(value: string): string {
       root.setRounding(value)
+      return "ok"
+    }
+    function position(): string {
+      return root._position
+    }
+    function setPosition(value: string): string {
+      root.setPosition(value)
       return "ok"
     }
   }

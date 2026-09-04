@@ -9,7 +9,7 @@
 # corner rounding.
 #
 # It is fully self-contained and isolated:
-#   * Uses its OWN Wayland app id (`omarec-<orientation>-<size>-<rounding>`), so
+#   * Uses its OWN Wayland app id (`omarec-<orientation>-<size>-<rounding>-<position>`), so
 #     it never collides with Omarchy's `WebcamOverlay` screen-record rules and
 #     never leaks its geometry/rounding to them.
 #   * Own geometry via a runtime `hl.window_rule` (float/pin/size/move/rounding);
@@ -22,7 +22,8 @@
 #   omarec on | off                 # start / stop the overlay
 #   omarec resize <p>               # small|medium|large|smaller|larger
 #   omarec orientation <p>          # portrait|landscape
-#   omarec rounding <px>            # 0..30 corner radius (0 = square)
+#   omarec rounding <px>            # 0..20 corner radius (0 = square)
+#   omarec position <corner>        # top-left|top-right|bottom-left|bottom-right
 #   omarec devices                  # list cameras
 #   omarec pick-device              # choose a camera (menu) and remember it
 #   omarec status                   # running | stopped
@@ -60,7 +61,7 @@ write_config() {
 
 overlay_active() {
   command -v hyprctl >/dev/null 2>&1 || return 1
-  hyprctl clients -j 2>/dev/null | jq -e 'any(.[]; .title == "WebcamOverlay")' >/dev/null 2>&1
+  hyprctl clients -j 2>/dev/null | jq -e 'any(.[]; .class | startswith("omarec-"))' >/dev/null 2>&1
 }
 
 webcam_device() {
@@ -124,15 +125,31 @@ geom_height() { # orientation size
   esac
 }
 
+geom_move_x() { # position width expression
+  case "$1" in
+    top-left | bottom-left) echo "40" ;;
+    top-right | bottom-right) echo "monitor_w-$2-40" ;;
+  esac
+}
+
+geom_move_y() { # position height expression
+  case "$1" in
+    top-left | top-right) echo "40" ;;
+    bottom-left | bottom-right) echo "monitor_h-$2-40" ;;
+  esac
+}
+
 # Apply the full set of window rules for one overlay app id. Rounding is baked
 # into the app id too, so a change of any setting always yields a fresh app id
 # and rule — no stale/duplicate-rule conflicts, ever.
-apply_geometry() { # orientation size rounding
-  local orientation="$1" size="$2" rounding="$3"
-  local app_id="omarec-${orientation}-${size}-r${rounding}"
-  local w h
+apply_geometry() { # orientation size rounding position
+  local orientation="$1" size="$2" rounding="$3" position="$4"
+  local app_id="omarec-${orientation}-${size}-r${rounding}-${position}"
+  local w h x y
   w="$(geom_width "$orientation" "$size")"
   h="$(geom_height "$orientation" "$size")"
+  x="$(geom_move_x "$position" "$w")"
+  y="$(geom_move_y "$position" "$h")"
   hyprctl eval "hl.window_rule({
     match = { class = '^${app_id}\$', title = '^WebcamOverlay\$' },
     float = true,
@@ -145,21 +162,23 @@ apply_geometry() { # orientation size rounding
     opacity = '1 1',
     rounding = ${rounding},
     size = { '${w}', '${h}' },
-    move = { 'monitor_w-${w}-40', 'monitor_h-${h}-40' }
+    move = { '${x}', '${y}' }
   })" >/dev/null 2>&1
   printf '%s' "$app_id"
 }
 
 start_overlay() {
   local device="${1:-}"
-  local size orientation rounding app_id vf
+  local size orientation rounding position app_id vf
   size="$(read_config size medium)"
   case "$size" in small | medium | large) ;; *) size="medium" ;; esac
   orientation="$(read_config orientation portrait)"
   case "$orientation" in portrait | landscape) ;; *) orientation="portrait" ;; esac
   rounding="$(read_config rounding 12)"
-  [[ $rounding =~ ^[0-9]+$ ]] && (( rounding > 30 )) && rounding=30
+  [[ $rounding =~ ^[0-9]+$ ]] && (( rounding > 20 )) && rounding=20
   [[ $rounding =~ ^[0-9]+$ ]] || rounding=12
+  position="$(read_config position bottom-right)"
+  case "$position" in top-left | top-right | bottom-left | bottom-right) ;; *) position="bottom-right" ;; esac
 
   if [[ -z $device ]]; then
     device="$(webcam_device)"
@@ -180,7 +199,7 @@ start_overlay() {
     vf='--vf=lavfi=[crop=ih*8/9:ih]'
   fi
 
-  app_id="$(apply_geometry "$orientation" "$size" "$rounding")"
+  app_id="$(apply_geometry "$orientation" "$size" "$rounding" "$position")"
 
   mpv "av://v4l2:$device" \
     --profile=low-latency --untimed --no-cache \
@@ -200,7 +219,9 @@ start_overlay() {
 }
 
 stop_overlay() {
-  pkill -f "av://v4l2:" 2>/dev/null || true
+  # Limit the stop command to mpv instances carrying OMARec's app-id prefix.
+  # Other webcam previews and Omarchy's recorder overlay stay untouched.
+  pkill -f -- "--wayland-app-id=omarec-" 2>/dev/null || true
 }
 
 toggle_overlay() {
@@ -214,7 +235,7 @@ toggle_overlay() {
 }
 
 usage() {
-  echo "Usage: omarec [on|off|toggle|resize|orientation|rounding|devices|pick-device|status|get-size|get-orientation|get-rounding|get-device]" >&2
+  echo "Usage: omarec [on|off|toggle|resize|orientation|rounding|position|devices|pick-device|status|get-size|get-orientation|get-rounding|get-position|get-device]" >&2
 }
 
 case "${1:-toggle}" in
@@ -261,9 +282,19 @@ orientation)
   ;;
 rounding)
   rounding="${2:-}"
-  [[ $rounding =~ ^[0-9]+$ ]] || { echo "rounding must be a whole number of pixels (0..30)" >&2; exit 1; }
-  ((rounding > 30)) && rounding=30
+  [[ $rounding =~ ^[0-9]+$ ]] || { echo "rounding must be a whole number of pixels (0..20)" >&2; exit 1; }
+  ((rounding > 20)) && rounding=20
   write_config rounding "$rounding"
+  if overlay_active; then start_overlay; fi
+  ;;
+position)
+  position="${2:-}"
+  case "$position" in top-left | top-right | bottom-left | bottom-right) ;; *)
+    echo "position must be top-left|top-right|bottom-left|bottom-right" >&2
+    exit 1
+    ;;
+  esac
+  write_config position "$position"
   if overlay_active; then start_overlay; fi
   ;;
 devices)
@@ -301,7 +332,12 @@ get-orientation)
 get-rounding)
   rounding="$(read_config rounding 12)"
   [[ $rounding =~ ^[0-9]+$ ]] || rounding=12
+  ((rounding > 20)) && rounding=20
   printf '%s\n' "$rounding"
+  ;;
+get-position)
+  position="$(read_config position bottom-right)"
+  case "$position" in top-left | top-right | bottom-left | bottom-right) printf '%s\n' "$position" ;; *) printf 'bottom-right\n' ;; esac
   ;;
 *)
   usage
