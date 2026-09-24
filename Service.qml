@@ -312,7 +312,7 @@ QtObject {
   // --------------------------------------------------------------- IPC
   property IpcHandler ipc: IpcHandler {
     id: ipc
-    target: "omarec"
+    target: "io.github.theneovimmer.omarec"
 
     function on(): string {
       root.on()
@@ -327,11 +327,11 @@ QtObject {
       return root._state
     }
     function open(): string {
-      if (root.shell && typeof root.shell.summon === "function") root.shell.summon("omarec")
+      if (root.shell && typeof root.shell.summon === "function") root.shell.summon("io.github.theneovimmer.omarec")
       return "ok"
     }
     function close(): string {
-      if (root.shell && typeof root.shell.hide === "function") root.shell.hide("omarec")
+      if (root.shell && typeof root.shell.hide === "function") root.shell.hide("io.github.theneovimmer.omarec")
       return "ok"
     }
     function refresh(): string {

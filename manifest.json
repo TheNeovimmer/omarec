@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "omarec",
+  "id": "io.github.theneovimmer.omarec",
   "name": "OMARec Studio",
   "version": "2.1.0",
   "author": "theneovimmer",

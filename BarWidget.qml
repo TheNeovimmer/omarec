@@ -8,7 +8,7 @@ import qs.Ui
 
 // Bar entry point for OMARec: a camera icon that becomes a LIVE pill while the
 // floating camera overlay is up, plus a compact Studio control panel. The UI is
-// deliberately distinct from on-air: no PanelHero, no toggle switch — instead a
+// deliberately minimal: no PanelHero, no toggle switch — instead a
 // minimal header row with a start/stop button, native segmented controls for
 // size, framing and rounding, a corner pad for position, and a live geometry
 // preview showing exactly where the bubble will land.
@@ -21,7 +21,7 @@ Panel {
   readonly property var service: bar && bar.shell && moduleName ? bar.shell.serviceFor(moduleName) : null
 
   // ---- service state (always defined so the UI never reads null) -------
-  readonly property bool onAir: service ? service.active : false
+  readonly property bool live: service ? service.active : false
   readonly property string camera: service ? service.camera : ""
   readonly property string size: service ? service.size : "medium"
   readonly property string orientation: service ? service.orientation : "portrait"
@@ -33,7 +33,7 @@ Panel {
   readonly property string degradedHint: service ? service.degradedHint : ""
 
   readonly property bool showWhenIdle: setting("showWhenIdle", true) !== false
-  readonly property bool pillMode: root.onAir
+  readonly property bool pillMode: root.live
   // A live widget must stay visible or it could never be stopped.
   readonly property bool shown: root.pillMode || root.showWhenIdle
   readonly property bool visibleInBar: root.shown || root.opened
@@ -62,8 +62,8 @@ Panel {
 
   readonly property string tooltip: {
     if (!root.service) return "OMARec — service not loaded"
-    if (root.busy && !root.onAir) return "OMARec — working…"
-    if (root.onAir) return "OMARec — live on " + (root.camera || "default")
+    if (root.busy && !root.live) return "OMARec — working…"
+    if (root.live) return "OMARec — live on " + (root.camera || "default")
     if (root.degraded) return "OMARec — degraded: " + (root.degradedHint || "CLI unavailable")
     return "OMARec — off"
   }
@@ -95,7 +95,7 @@ Panel {
 
   readonly property string heroMeta: {
     if (!root.service) return "Service not loaded"
-    if (root.onAir) return "Live · " + (root.camera || "default camera")
+    if (root.live) return "Live · " + (root.camera || "default camera")
     return "Ready · " + root.orientation + " " + root.aspectLabel + " · " + root.size
   }
 
@@ -327,7 +327,7 @@ Panel {
               }
 
               Button {
-                text: root.busy ? "…" : (root.onAir ? "Stop" : "Start")
+                text: root.busy ? "…" : (root.live ? "Stop" : "Start")
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 bordered: true
@@ -590,7 +590,7 @@ Panel {
               x: root.previewLeft ? Style.space(6) : parent.width - width - Style.space(6)
               y: root.previewTop ? Style.space(6) : parent.height - height - Style.space(6)
               color: root.accent
-              opacity: root.onAir ? 1.0 : 0.55
+              opacity: root.live ? 1.0 : 0.55
               radius: Math.min(width, height) * Number(root.rounding) / 40
             }
           }
