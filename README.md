@@ -25,7 +25,7 @@ screen position. Every setting is remembered inside the plugin.
 For a git-hosted copy, Omarchy installs and enables it in one command:
 
 ```sh
-omarchy plugin add <plugin-git-url> --enable --yes
+omarchy plugin add https://github.com/TheNeovimmer/omarec.git --enable --yes
 ```
 
 For this local checkout, validate it, then enable it in the right side of the bar:
