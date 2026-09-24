@@ -53,7 +53,8 @@ Backed by `bin/omarec` (also callable on its own):
 omarec                      # toggle
 omarec on                   # start overlay
 omarec off                  # stop overlay
-omarec resize S             # small | medium | large | smaller | larger
+omarec resize S             # small | medium | large | smaller | larger | reset
+omarec smaller | larger     # step the size down / up
 omarec orientation O        # portrait | landscape
 omarec rounding PX          # 0..20 corner radius in pixels
 omarec position CORNER      # top-left | top-right | bottom-left | bottom-right
@@ -61,6 +62,10 @@ omarec devices              # list webcams
 omarec pick-device          # choose & remember a webcam
 omarec status               # running | stopped
 omarec get-size|get-orientation|get-rounding|get-position|get-device
+omarec get-all [--json]     # all settings + status in one call
+omarec check                # dependency + device + status diagnostics
+omarec reset                # restore default size/orientation/rounding/position
+omarec help | version
 ```
 
 Preferences (remembered camera, size, orientation, rounding, and position) are stored in
@@ -75,21 +80,28 @@ visible at a glance.
 
 - **Left-click** the bar icon to open/close the panel.
 - **Right-click** the bar icon to toggle the overlay.
-- The bar icon becomes a clear **LIVE** pill while the overlay is up.
+- The bar icon becomes a clear **LIVE** pill while the overlay is up (it hides
+  with the panel closed when `showWhenIdle` is off).
 - In the panel, navigate with arrow keys and activate with Enter; the mouse works too.
   (There are no keyboard shortcuts — control is via the bar, the panel, or the CLI.)
+- The panel has a **Reset to defaults** row restoring
+  medium / portrait / 12px / bottom-right.
 
 The plugin is split like first-party plugins: `Service.qml` (one headless instance
 owning all processes/timers/IPC — the `omarec` IPC target: `on`, `off`, `toggle`,
-`open`, `close`, `refresh`, `status`, `pickDevice`, `orientation`, `rounding`,
-`setOrientation`, `setRounding`) and `BarWidget.qml`
+`open`, `close`, `refresh`, `status`, `size`, `setSize`, `device`, `pickDevice`,
+`orientation`, `setOrientation`, `rounding`, `setRounding`, `position`,
+`setPosition`, `reset`) and `BarWidget.qml`
 (a view per monitor rendering the panel).
 
 ## Performance
 
-The service polls only a single cheap `status` probe on a generous timer (3s). Camera and
-overlay-setting labels refresh lazily — when the panel opens or an action lands — so idle
-CPU stays near zero and only one process is spawned per tick.
+The service polls only a single cheap `status` probe on a generous timer (3s).
+Camera and overlay settings refresh lazily in **one** `get-all --json` call —
+when the panel opens, an action lands, or `omarec.conf` changes on disk — so
+idle CPU stays near zero and only one process is spawned per tick. Rapid bar
+clicks are serialised with last-intent-wins instead of stacking overlay
+restarts.
 
 ## Isolation and privacy
 
@@ -107,9 +119,27 @@ CPU stays near zero and only one process is spawned per tick.
 ## Lightweight
 
 The service is a thin QtObject. Idle it spawns a single cheap `status` probe every 3s
-and nothing else; the lazy labels refresh only when the panel opens or an action lands.
+and nothing else; the lazy labels refresh in one `get-all --json` call only when the
+panel opens, an action lands, or the conf file changes.
 The QML is static (no animations), so shell CPU/memory cost is negligible. The only
 notable consumer is `mpv` itself, and that is only running while the overlay is up.
+
+## Troubleshooting
+
+```sh
+omarec check    # deps, remembered settings, visible webcams
+omarec devices  # what the picker would offer
+```
+
+- **"No webcam devices found"**: no capture-capable `/dev/video*` exists.
+  Check `v4l2-ctl --list-devices` and your USB connection.
+- **Overlay fails to appear**: run `omarec on` in a terminal — a missing
+  `mpv`/`jq`/`hyprctl` prints a direct error, and `check` lists gaps.
+- **Stale panel values**: the service re-reads `omarec.conf` on every change,
+  including edits made from the terminal. `omarchy shell omarec refresh`
+  forces a re-read.
+- **Tests**: `tests/run.sh` exercises the CLI contract (validation, clamping,
+  `get-all --json`, `check`) without needing a camera.
 
 ## Uninstall
 

@@ -2,8 +2,9 @@
   "schemaVersion": 1,
   "id": "omarec",
   "name": "OMARec Studio",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "theneovimmer",
+  "license": "MIT",
   "description": "A private, configurable live webcam overlay built for polished screen-sharing and meetings. No recording.",
   "kinds": [
     "service",
@@ -18,6 +19,17 @@
     "description": "Run a private live camera overlay for meetings; choose the camera, shape, size, rounding, and screen corner.",
     "category": "System",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "showWhenIdle": true
+    },
+    "schema": [
+      {
+        "key": "showWhenIdle",
+        "type": "boolean",
+        "label": "Show icon when overlay is off",
+        "defaultValue": true
+      }
+    ]
   }
 }

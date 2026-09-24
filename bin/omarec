@@ -5,63 +5,163 @@
 #
 # Backs the "OMARec" omarchy shell plugin. It shows a floating live camera
 # overlay — the same idea as `omarchy screenrecord --with-webcam`, minus the
-# recording — with user-configurable size, orientation (portrait/landscape) and
-# corner rounding.
+# recording — with user-configurable size, orientation (portrait/landscape),
+# corner rounding and screen corner.
 #
 # It is fully self-contained and isolated:
-#   * Uses its OWN Wayland app id (`omarec-<orientation>-<size>-<rounding>-<position>`), so
+#   * Uses its OWN Wayland app id (`omarec-<orientation>-<size>-r<rounding>-<position>`), so
 #     it never collides with Omarchy's `WebcamOverlay` screen-record rules and
 #     never leaks its geometry/rounding to them.
 #   * Own geometry via a runtime `hl.window_rule` (float/pin/size/move/rounding);
 #     no edits to hyprland.lua or any Omarchy config are needed.
-#   * All state (device, size, orientation, rounding) lives in omarec.conf inside
-#     this plugin folder; deleting the folder removes everything.
+#   * All state (device, size, orientation, rounding, position) lives in omarec.conf
+#     inside this plugin folder; deleting the folder removes everything.
 #
 # Usage:
 #   omarec                          # toggle
 #   omarec on | off                 # start / stop the overlay
-#   omarec resize <p>               # small|medium|large|smaller|larger
+#   omarec resize <p>               # small|medium|large|smaller|larger|reset
+#   omarec smaller | larger         # step the size down / up (restarts overlay if live)
 #   omarec orientation <p>          # portrait|landscape
 #   omarec rounding <px>            # 0..20 corner radius (0 = square)
 #   omarec position <corner>        # top-left|top-right|bottom-left|bottom-right
 #   omarec devices                  # list cameras
 #   omarec pick-device              # choose a camera (menu) and remember it
 #   omarec status                   # running | stopped
-#   omarec get-size|get-orientation|get-rounding|get-device
+#   omarec get-size|get-orientation|get-rounding|get-position|get-device
+#   omarec get-all [--json]         # all settings (+ status) in one call
+#   omarec check                    # dependency + device + status diagnostics
+#   omarec reset                    # restore default size/orientation/rounding/position
+#   omarec help | --help | -h       # this help
+#   omarec version | --version      # print version
 
 set -euo pipefail
 
+VERSION="2.1.0"
+
 PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONF_FILE="$PLUGIN_DIR/omarec.conf"
+LOCK_FILE="$PLUGIN_DIR/.omarec.conf.lock"
 
+DEFAULT_SIZE="medium"
+DEFAULT_ORIENTATION="portrait"
+DEFAULT_ROUNDING="12"
+DEFAULT_POSITION="bottom-right"
+
+# ------------------------------------------------------------------ helpers
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+notify() { # [flags...] -- headline
+  have omarchy-notification-send || return 0
+  # Flags (if any) must precede the headline for omarchy-notification-send.
+  omarchy-notification-send "$@" 2>/dev/null || true
+}
+
+die() {
+  printf 'omarec: %s\n' "$*" >&2
+  exit 1
+}
+
+# Robust key=value reader: ignores blank lines and #-comments, trims
+# whitespace and CR, last occurrence wins. Never fails (prints default).
 read_config() {
-  local key="$1" default="${2:-}"
-  local value="$default"
+  local key="$1" default="${2:-}" line k v
+  local value="$default" found=0
   if [[ -f $CONF_FILE ]]; then
-    while IFS='=' read -r k v; do
-      [[ $k == "$key" ]] && value="$v"
-    done < <(sed 's/\r//g' "$CONF_FILE")
+    while IFS= read -r line || [[ -n $line ]]; do
+      line="${line%$'\r'}"
+      # trim leading/trailing whitespace
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      [[ -z $line || $line == \#* ]] && continue
+      [[ $line == *"="* ]] || continue
+      k="${line%%=*}"
+      v="${line#*=}"
+      k="${k#"${k%%[![:space:]]*}"}"
+      k="${k%"${k##*[![:space:]]}"}"
+      v="${v#"${v%%[![:space:]]*}"}"
+      v="${v%"${v##*[![:space:]]}"}"
+      if [[ $k == "$key" ]]; then
+        value="$v"
+        found=1
+      fi
+    done <"$CONF_FILE"
   fi
   printf '%s' "$value"
 }
 
+# Atomic, locked writer: preserves every unrelated line verbatim (including
+# comments and blank lines), replaces the key in place, appends if missing.
 write_config() {
   local key="$1" value="$2"
-  local tmp="${CONF_FILE}.tmp"
-  : >"$tmp"
+  local tmp wrote=0 line k
+  tmp="$(mktemp "${CONF_FILE}.tmp.XXXXXX")"
+  # Serialize concurrent writers (QML actions + terminal CLI).
+  exec 9>"$LOCK_FILE"
+  flock -x 9 || die "could not lock $CONF_FILE"
   if [[ -f $CONF_FILE ]]; then
-    while IFS='=' read -r k v; do
-      [[ -n $k && $k == \#* ]] && printf '%s\n' "$k=$v" >>"$tmp"
-      [[ -n $k && $k != \#* && $k != "$key" ]] && printf '%s=%s\n' "$k" "$v" >>"$tmp"
-    done < <(sed 's/\r//g' "$CONF_FILE" 2>/dev/null)
+    while IFS= read -r line || [[ -n $line ]]; do
+      local stripped="$line"
+      stripped="${stripped%$'\r'}"
+      local t="${stripped#"${stripped%%[![:space:]]*}"}"
+      if [[ -z $t || $t == \#* || $t != *"="* ]]; then
+        printf '%s\n' "$line" >>"$tmp"
+        continue
+      fi
+      k="${t%%=*}"
+      k="${k%"${k##*[![:space:]]}"}"
+      if [[ $k == "$key" && $wrote -eq 0 ]]; then
+        printf '%s=%s\n' "$key" "$value" >>"$tmp"
+        wrote=1
+      elif [[ $k == "$key" ]]; then
+        # drop duplicate keys
+        continue
+      else
+        printf '%s\n' "$line" >>"$tmp"
+      fi
+    done <"$CONF_FILE"
   fi
-  printf '%s=%s\n' "$key" "$value" >>"$tmp"
-  mv "$tmp" "$CONF_FILE"
+  if ((wrote == 0)); then
+    printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  fi
+  mv -f "$tmp" "$CONF_FILE"
+  flock -u 9
+  exec 9>&-
+}
+
+# --- normalized getters (single source of truth for defaults) ---
+
+get_size() {
+  local v
+  v="$(read_config size "$DEFAULT_SIZE")"
+  case "$v" in small | medium | large) printf '%s\n' "$v" ;; *) printf '%s\n' "$DEFAULT_SIZE" ;; esac
+}
+
+get_orientation() {
+  local v
+  v="$(read_config orientation "$DEFAULT_ORIENTATION")"
+  case "$v" in portrait | landscape) printf '%s\n' "$v" ;; *) printf '%s\n' "$DEFAULT_ORIENTATION" ;; esac
+}
+
+get_rounding() {
+  local v
+  v="$(read_config rounding "$DEFAULT_ROUNDING")"
+  [[ $v =~ ^[0-9]+$ ]] || v="$DEFAULT_ROUNDING"
+  ((v > 20)) && v=20
+  printf '%s\n' "$v"
+}
+
+get_position() {
+  local v
+  v="$(read_config position "$DEFAULT_POSITION")"
+  case "$v" in top-left | top-right | bottom-left | bottom-right) printf '%s\n' "$v" ;; *) printf '%s\n' "$DEFAULT_POSITION" ;; esac
 }
 
 overlay_active() {
-  command -v hyprctl >/dev/null 2>&1 || return 1
-  hyprctl clients -j 2>/dev/null | jq -e 'any(.[]; .class | startswith("omarec-"))' >/dev/null 2>&1
+  have hyprctl || return 1
+  have jq || return 1
+  hyprctl clients -j 2>/dev/null | jq -e 'any(.[]; (.class // "" | startswith("omarec-")))' >/dev/null 2>&1
 }
 
 webcam_device() {
@@ -71,15 +171,16 @@ webcam_device() {
     printf '%s' "$dev"
     return
   fi
-  if command -v omarchy-capture-webcam-list >/dev/null 2>&1; then
-    omarchy-capture-webcam-list | sed -n '1s/[[:space:]].*//p'
+  if have omarchy-capture-webcam-list; then
+    omarchy-capture-webcam-list 2>/dev/null | sed -n '1s/[[:space:]].*//p'
   fi
 }
 
 list_devices() {
-  if command -v omarchy-capture-webcam-list >/dev/null 2>&1; then
-    omarchy-capture-webcam-list
+  if have omarchy-capture-webcam-list; then
+    omarchy-capture-webcam-list 2>/dev/null
   else
+    have v4l2-ctl || return 0
     v4l2-ctl --list-devices 2>/dev/null | awk '
       /^\S/ { name=$0 }
       /^[[:space:]]+\/dev\/video/ { print $1 "  " name }
@@ -91,7 +192,7 @@ overlay_capture_options() {
   local device="$1"
   local res cap="framerate=30"
   local formats
-  formats="$(v4l2-ctl --list-formats-ext -d "$device" 2>/dev/null)"
+  formats="$(v4l2-ctl --list-formats-ext -d "$device" 2>/dev/null || true)"
   for res in 640x360 1280x720 1920x1080; do
     if [[ $formats == *"$res"* ]]; then
       cap="video_size=$res,$cap"
@@ -141,7 +242,8 @@ geom_move_y() { # position height expression
 
 # Apply the full set of window rules for one overlay app id. Rounding is baked
 # into the app id too, so a change of any setting always yields a fresh app id
-# and rule — no stale/duplicate-rule conflicts, ever.
+# and rule — no stale/duplicate-rule conflicts, ever. (Old rules for previous
+# app ids are harmless: no live window ever matches them again.)
 apply_geometry() { # orientation size rounding position
   local orientation="$1" size="$2" rounding="$3" position="$4"
   local app_id="omarec-${orientation}-${size}-r${rounding}-${position}"
@@ -150,40 +252,44 @@ apply_geometry() { # orientation size rounding position
   h="$(geom_height "$orientation" "$size")"
   x="$(geom_move_x "$position" "$w")"
   y="$(geom_move_y "$position" "$h")"
-  hyprctl eval "hl.window_rule({
+  if ! hyprctl eval "hl.window_rule({
     match = { class = '^${app_id}\$', title = '^WebcamOverlay\$' },
     float = true,
     pin = true,
     no_initial_focus = true,
     no_focus = true,
     no_dim = true,
-    no_border = true,
+    no_shadow = true,
     tag = '-default-opacity',
     opacity = '1 1',
     rounding = ${rounding},
     size = { '${w}', '${h}' },
     move = { '${x}', '${y}' }
-  })" >/dev/null 2>&1
+  })" >/dev/null 2>&1; then
+    die "hyprctl could not apply the overlay window rule"
+  fi
   printf '%s' "$app_id"
 }
 
 start_overlay() {
   local device="${1:-}"
   local size orientation rounding position app_id vf
-  size="$(read_config size medium)"
-  case "$size" in small | medium | large) ;; *) size="medium" ;; esac
-  orientation="$(read_config orientation portrait)"
-  case "$orientation" in portrait | landscape) ;; *) orientation="portrait" ;; esac
-  rounding="$(read_config rounding 12)"
-  [[ $rounding =~ ^[0-9]+$ ]] && (( rounding > 20 )) && rounding=20
-  [[ $rounding =~ ^[0-9]+$ ]] || rounding=12
-  position="$(read_config position bottom-right)"
-  case "$position" in top-left | top-right | bottom-left | bottom-right) ;; *) position="bottom-right" ;; esac
+  size="$(get_size)"
+  orientation="$(get_orientation)"
+  rounding="$(get_rounding)"
+  position="$(get_position)"
 
+  have hyprctl || die "hyprctl not found — is Hyprland running?"
+  have jq || die "jq is required but not installed"
+  have mpv || die "mpv is required but not installed"
+
+  if [[ -n $device && ! -e $device ]]; then
+    die "webcam not found: $device"
+  fi
   if [[ -z $device ]]; then
     device="$(webcam_device)"
     if [[ -z $device ]]; then
-      omarchy-notification-send "No webcam devices found" -u critical -t 3000 2>/dev/null || true
+      notify -u critical -t 3000 "No webcam devices found"
       return 1
     fi
   fi
@@ -208,13 +314,18 @@ start_overlay() {
     --title="WebcamOverlay" --wayland-app-id="$app_id" \
     --no-border --no-audio --no-osc --osd-level=0 \
     --really-quiet &>/dev/null &
+  disown || true
 
   local waited=0
   while ((waited < 40)) && ! overlay_active; do
     sleep 0.05
-    ((waited++))
+    ((waited++)) || true
   done
 
+  if ! overlay_active; then
+    notify -u critical -t 3000 "Camera overlay failed to appear"
+    return 1
+  fi
   return 0
 }
 
@@ -222,125 +333,235 @@ stop_overlay() {
   # Limit the stop command to mpv instances carrying OMARec's app-id prefix.
   # Other webcam previews and Omarchy's recorder overlay stay untouched.
   pkill -f -- "--wayland-app-id=omarec-" 2>/dev/null || true
+  # Give the compositor a beat to drop the windows before a restart re-maps.
+  local waited=0
+  while ((waited < 10)) && overlay_active; do
+    sleep 0.05
+    ((waited++)) || true
+  done
+  return 0
 }
 
 toggle_overlay() {
   if overlay_active; then
     stop_overlay
-    omarchy-notification-send "Camera overlay off" 2>/dev/null || true
+    notify "Camera overlay off"
   else
-    start_overlay
-    omarchy-notification-send "Camera overlay on" 2>/dev/null || true
+    if start_overlay; then
+      notify "Camera overlay on"
+    else
+      return 1
+    fi
   fi
+}
+
+step_size() { # smaller|larger
+  local dir="$1" cur size
+  cur="$(get_size)"
+  case "$dir" in
+    smaller)
+      case "$cur" in small) size=small ;; medium) size=small ;; large) size=medium ;; *) size=small ;; esac
+      ;;
+    larger)
+      case "$cur" in small) size=medium ;; medium) size=large ;; large) size=large ;; *) size=medium ;; esac
+      ;;
+  esac
+  write_config size "$size"
+  printf '%s\n' "$size"
+  if overlay_active; then start_overlay; fi
+}
+
+print_all_json() {
+  local device size orientation rounding position status
+  device="$(webcam_device)"
+  size="$(get_size)"
+  orientation="$(get_orientation)"
+  rounding="$(get_rounding)"
+  position="$(get_position)"
+  if overlay_active; then status="running"; else status="stopped"; fi
+  if have jq; then
+    jq -cn --arg device "$device" --arg size "$size" --arg orientation "$orientation" \
+      --arg rounding "$rounding" --arg position "$position" --arg status "$status" \
+      '{device:$device,size:$size,orientation:$orientation,rounding:$rounding,position:$position,status:$status}'
+  else
+    printf '{"device":"%s","size":"%s","orientation":"%s","rounding":"%s","position":"%s","status":"%s"}\n' \
+      "$device" "$size" "$orientation" "$rounding" "$position" "$status"
+  fi
+}
+
+print_all_kv() {
+  printf 'device=%s\nsize=%s\norientation=%s\nrounding=%s\nposition=%s\nstatus=%s\n' \
+    "$(webcam_device)" "$(get_size)" "$(get_orientation)" "$(get_rounding)" "$(get_position)" \
+    "$(overlay_active && printf 'running' || printf 'stopped')"
+}
+
+run_check() {
+  local ok=0
+  printf 'omarec check\n'
+  printf '%s\n' '-----------'
+  for cmd in hyprctl jq mpv v4l2-ctl; do
+    if have "$cmd"; then printf 'ok   %s\n' "$cmd"
+    else printf 'MISS %s (required)\n' "$cmd"; ok=1; fi
+  done
+  for cmd in omarchy-notification-send omarchy-menu-select omarchy-capture-webcam-list; do
+    if have "$cmd"; then printf 'ok   %s\n' "$cmd"
+    else printf '.... %s (optional, degraded without it)\n' "$cmd"; fi
+  done
+  printf 'config: %s\n' "$CONF_FILE"
+  print_all_kv | sed 's/^/  /'
+  local ndev
+  ndev="$(list_devices | wc -l | tr -d ' ')"
+  printf 'webcams: %s visible\n' "$ndev"
+  list_devices | sed 's/^/  /'
+  return "$ok"
 }
 
 usage() {
-  echo "Usage: omarec [on|off|toggle|resize|orientation|rounding|position|devices|pick-device|status|get-size|get-orientation|get-rounding|get-position|get-device]" >&2
+  cat >&2 <<'USAGE'
+Usage: omarec [on|off|toggle|resize|orientation|rounding|position|devices|pick-device|status|get-*|get-all|check|reset|help|version]
+
+  on | start                start the overlay
+  off | stop                 stop the overlay
+  toggle                     toggle (default, no args)
+  resize <p>                 small|medium|large|smaller|larger|reset
+  smaller | larger           step size down/up
+  orientation <p>            portrait|landscape
+  rounding <px>              0..20 corner radius (0 = square)
+  position <corner>          top-left|top-right|bottom-left|bottom-right
+  devices                    list webcams
+  pick-device                choose & remember a webcam
+  status                     running | stopped
+  get-size | get-orientation | get-rounding | get-position | get-device
+  get-all [--json]           all settings + status in one call (JSON with --json)
+  check                      dependency + device + status diagnostics
+  reset                      restore default size/orientation/rounding/position
+  help | --help | -h         this help
+  version | --version        print version
+USAGE
 }
 
 case "${1:-toggle}" in
-on | start)
-  start_overlay "${2:-}"
-  ;;
-off | stop)
-  stop_overlay
-  ;;
-toggle)
-  toggle_overlay
-  ;;
-resize)
-  size="${2:-medium}"
-  case "$size" in small | medium | large) ;; *)
-    echo "size must be small|medium|large" >&2
+  -h | --help | help)
+    usage
+    exit 0
+    ;;
+  -V | --version | version)
+    printf 'omarec %s\n' "$VERSION"
+    exit 0
+    ;;
+  on | start)
+    start_overlay "${2:-}"
+    ;;
+  off | stop)
+    stop_overlay
+    ;;
+  toggle)
+    toggle_overlay
+    ;;
+  resize)
+    size="${2:-medium}"
+    case "$size" in
+      small | medium | large) ;;
+      smaller) step_size smaller; exit 0 ;;
+      larger) step_size larger; exit 0 ;;
+      reset)
+        write_config size "$DEFAULT_SIZE"
+        if overlay_active; then start_overlay; fi
+        exit 0
+        ;;
+      *)
+        echo "size must be small|medium|large|smaller|larger|reset" >&2
+        exit 1
+        ;;
+    esac
+    write_config size "$size"
+    if overlay_active; then start_overlay; fi
+    ;;
+  smaller | larger)
+    step_size "$1"
+    ;;
+  orientation)
+    orientation="${2:-}"
+    case "$orientation" in portrait | landscape) ;; *)
+      echo "orientation must be portrait|landscape" >&2
+      exit 1
+      ;;
+    esac
+    write_config orientation "$orientation"
+    if overlay_active; then start_overlay; fi
+    ;;
+  rounding)
+    rounding="${2:-}"
+    [[ $rounding =~ ^[0-9]+$ ]] || { echo "rounding must be a whole number of pixels (0..20)" >&2; exit 1; }
+    ((rounding > 20)) && rounding=20
+    write_config rounding "$rounding"
+    if overlay_active; then start_overlay; fi
+    ;;
+  position)
+    position="${2:-}"
+    case "$position" in top-left | top-right | bottom-left | bottom-right) ;; *)
+      echo "position must be top-left|top-right|bottom-left|bottom-right" >&2
+      exit 1
+      ;;
+    esac
+    write_config position "$position"
+    if overlay_active; then start_overlay; fi
+    ;;
+  devices)
+    list_devices
+    ;;
+  pick-device)
+    mapfile -t devices < <(list_devices)
+    if ((${#devices[@]} == 0)); then
+      echo "No webcam devices found" >&2
+      exit 1
+    fi
+    if ((${#devices[@]} == 1)); then
+      chosen="${devices[0]%%[[:space:]]*}"
+    else
+      have omarchy-menu-select || die "omarchy-menu-select not found — pass the device explicitly: omarec on /dev/video0"
+      chosen=$(omarchy-menu-select "Select Camera" "${devices[@]}" -- --width 520 --maxheight 520) || exit 1
+      chosen="${chosen%%[[:space:]]*}"
+    fi
+    [[ -n $chosen ]] || exit 1
+    write_config device "$chosen"
+    printf '%s\n' "$chosen"
+    ;;
+  status)
+    if overlay_active; then printf 'running\n'; else printf 'stopped\n'; fi
+    ;;
+  get-device)
+    printf '%s\n' "$(webcam_device)"
+    ;;
+  get-size)
+    get_size
+    ;;
+  get-orientation)
+    get_orientation
+    ;;
+  get-rounding)
+    get_rounding
+    ;;
+  get-position)
+    get_position
+    ;;
+  get-all)
+    if [[ ${2:-} == --json ]]; then print_all_json; else print_all_kv; fi
+    ;;
+  check)
+    run_check
+    ;;
+  reset)
+    write_config size "$DEFAULT_SIZE"
+    write_config orientation "$DEFAULT_ORIENTATION"
+    write_config rounding "$DEFAULT_ROUNDING"
+    write_config position "$DEFAULT_POSITION"
+    if overlay_active; then start_overlay; fi
+    printf 'reset to size=%s orientation=%s rounding=%s position=%s\n' \
+      "$DEFAULT_SIZE" "$DEFAULT_ORIENTATION" "$DEFAULT_ROUNDING" "$DEFAULT_POSITION"
+    ;;
+  *)
+    usage
     exit 1
     ;;
-  esac
-  write_config size "$size"
-  if overlay_active; then start_overlay; fi
-  ;;
-smaller)
-  cur="$(read_config size medium)"
-  case "$cur" in small) size=small ;; medium) size=small ;; large) size=medium ;; *) size=small ;; esac
-  write_config size "$size"
-  if overlay_active; then start_overlay; fi
-  ;;
-larger)
-  cur="$(read_config size medium)"
-  case "$cur" in small) size=medium ;; medium) size=large ;; large) size=large ;; *) size=medium ;; esac
-  write_config size "$size"
-  if overlay_active; then start_overlay; fi
-  ;;
-orientation)
-  orientation="${2:-}"
-  case "$orientation" in portrait | landscape) ;; *)
-    echo "orientation must be portrait|landscape" >&2
-    exit 1
-    ;;
-  esac
-  write_config orientation "$orientation"
-  if overlay_active; then start_overlay; fi
-  ;;
-rounding)
-  rounding="${2:-}"
-  [[ $rounding =~ ^[0-9]+$ ]] || { echo "rounding must be a whole number of pixels (0..20)" >&2; exit 1; }
-  ((rounding > 20)) && rounding=20
-  write_config rounding "$rounding"
-  if overlay_active; then start_overlay; fi
-  ;;
-position)
-  position="${2:-}"
-  case "$position" in top-left | top-right | bottom-left | bottom-right) ;; *)
-    echo "position must be top-left|top-right|bottom-left|bottom-right" >&2
-    exit 1
-    ;;
-  esac
-  write_config position "$position"
-  if overlay_active; then start_overlay; fi
-  ;;
-devices)
-  list_devices
-  ;;
-pick-device)
-  mapfile -t devices < <(list_devices)
-  if (( ${#devices[@]} == 0 )); then
-    echo "No webcam devices found" >&2
-    exit 1
-  fi
-  if (( ${#devices[@]} == 1 )); then
-    chosen="${devices[0]%%[[:space:]]*}"
-  else
-    chosen=$(omarchy-menu-select "Select Camera" "${devices[@]}" -- --width 520 --maxheight 520) || exit 1
-    chosen="${chosen%%[[:space:]]*}"
-  fi
-  write_config device "$chosen"
-  printf '%s\n' "$chosen"
-  ;;
-status)
-  if overlay_active; then printf 'running\n'; else printf 'stopped\n'; fi
-  ;;
-get-device)
-  printf '%s\n' "$(webcam_device)"
-  ;;
-get-size)
-  size="$(read_config size medium)"
-  case "$size" in small | medium | large) printf '%s\n' "$size" ;; *) printf 'medium\n' ;; esac
-  ;;
-get-orientation)
-  orientation="$(read_config orientation portrait)"
-  case "$orientation" in portrait | landscape) printf '%s\n' "$orientation" ;; *) printf 'portrait\n' ;; esac
-  ;;
-get-rounding)
-  rounding="$(read_config rounding 12)"
-  [[ $rounding =~ ^[0-9]+$ ]] || rounding=12
-  ((rounding > 20)) && rounding=20
-  printf '%s\n' "$rounding"
-  ;;
-get-position)
-  position="$(read_config position bottom-right)"
-  case "$position" in top-left | top-right | bottom-left | bottom-right) printf '%s\n' "$position" ;; *) printf 'bottom-right\n' ;; esac
-  ;;
-*)
-  usage
-  exit 1
-  ;;
 esac

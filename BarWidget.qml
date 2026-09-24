@@ -6,10 +6,11 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// Bar entry point for OMARec: a camera icon that pulses when the live camera
-// overlay is active, plus a compact Studio control panel. The UI is deliberately
-// distinct from on-air: no PanelHero, no toggle switch — instead a minimal
-// header row with a start/stop button and grouped appearance/position grids.
+// Bar entry point for OMARec: a camera icon that becomes a LIVE pill while the
+// floating camera overlay is up, plus a compact Studio control panel. The UI is
+// deliberately distinct from on-air: no PanelHero, no toggle switch — instead a
+// minimal header row with a start/stop button and grouped appearance/position
+// grids.
 Panel {
   id: root
 
@@ -27,8 +28,13 @@ Panel {
   readonly property string position: service ? service.position : "bottom-right"
   readonly property bool busy: service ? service.busy : false
   readonly property bool picking: service ? service.picking : false
+  readonly property bool degraded: service ? service.degraded : false
+  readonly property string degradedHint: service ? service.degradedHint : ""
 
-  readonly property bool shown: true
+  readonly property bool showWhenIdle: setting("showWhenIdle", true) !== false
+  readonly property bool pillMode: root.onAir
+  // A live widget must stay visible or it could never be stopped.
+  readonly property bool shown: root.pillMode || root.showWhenIdle
   readonly property bool visibleInBar: root.shown || root.opened
   visible: root.visibleInBar
   implicitWidth: root.visibleInBar ? button.implicitWidth : 0
@@ -44,12 +50,20 @@ Panel {
   readonly property color hoverFill: Style.hoverFillFor(foreground, accent)
   readonly property color selectedFill: Style.selectedFillFor(foreground, accent)
 
+  // ---- bar pill --------------------------------------------------------
+  readonly property string pillText: "LIVE"
+  readonly property color pillFill: root.degraded ? root.barDim : root.accent
+  readonly property color pillForeground: Color.background
+  readonly property real pillWidth: Math.round(pillMetrics.width) + Style.space(30)
+
   // ---- bar icon (distinct from on-air: glyph + live dot) ---------------
-  readonly property bool degraded: !root.service
+  readonly property bool serviceMissing: !root.service
 
   readonly property string tooltip: {
     if (!root.service) return "OMARec — service not loaded"
+    if (root.busy && !root.onAir) return "OMARec — working…"
     if (root.onAir) return "OMARec — live on " + (root.camera || "default")
+    if (root.degraded) return "OMARec — degraded: " + (root.degradedHint || "CLI unavailable")
     return "OMARec — off"
   }
 
@@ -68,10 +82,11 @@ Panel {
     "toggle", "camera-pick",
     "size-small", "size-medium", "size-large",
     "orient-portrait", "orient-landscape",
-    "rounding-0", "rounding-8", "rounding-16",
-    "rounding-20",
+    "rounding-0", "rounding-8", "rounding-12",
+    "rounding-16", "rounding-20",
     "position-top-left", "position-top-right",
-    "position-bottom-left", "position-bottom-right"
+    "position-bottom-left", "position-bottom-right",
+    "reset"
   ]
 
   function navIndex(kind) { return root.nav.indexOf(kind) }
@@ -91,18 +106,20 @@ Panel {
     var kind = root.nav[root.cursorIndex]
     if (kind === "toggle") root.toggle()
     else if (kind === "camera-pick") root.pickCamera()
+    else if (kind === "reset") root.resetDefaults()
     else if (kind.indexOf("size-") === 0) root.applySize(kind.slice(5))
     else if (kind.indexOf("orient-") === 0) root.applyOrientation(kind.slice(7))
     else if (kind.indexOf("rounding-") === 0) root.applyRounding(kind.slice(9))
     else if (kind.indexOf("position-") === 0) root.applyPosition(kind.slice(9))
   }
 
-  function toggle() { if (root.service) root.service.toggle() }
+  function toggle() { if (root.service && !root.busy) root.service.toggle() }
   function applySize(value) { if (root.service) root.service.setSize(value) }
   function applyOrientation(value) { if (root.service) root.service.setOrientation(value) }
   function applyRounding(value) { if (root.service && /^[0-9]+$/.test(value)) root.service.setRounding(value) }
   function applyPosition(value) { if (root.service) root.service.setPosition(value) }
-  function pickCamera() { if (root.service) root.service.pickCamera() }
+  function pickCamera() { if (root.service && !root.busy) root.service.pickCamera() }
+  function resetDefaults() { if (root.service && !root.busy) root.service.resetDefaults() }
 
   onOpenedChanged: if (opened) {
     cursorActive = false
@@ -112,49 +129,79 @@ Panel {
     Qt.callLater(function () { keyCatcher.forceActiveFocus() })
   }
 
+  TextMetrics {
+    id: pillMetrics
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    font.bold: true
+    font.letterSpacing: 1.2
+    text: root.pillText
+  }
+
   // ---- bar icon --------------------------------------------------------
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
     tooltipText: root.tooltip
-    slotSize: Style.bar.iconSlot
-    opticalSize: Style.bar.iconCanvas
+    slotSize: root.pillMode ? root.pillWidth : Style.bar.iconSlot
+    opticalSize: root.pillMode ? root.pillWidth : Style.bar.iconCanvas
 
     iconComponent: Component {
       Item {
         anchors.fill: parent
 
-        // Camera glyph — green when live, dimmed when off or degraded.
-        Text {
+        // LIVE pill while the overlay is up.
+        BorderSurface {
           anchors.centerIn: parent
-          text: "󰅱"
-          color: root.onAir
-            ? root.accent
-            : (root.degraded ? root.barDim : root.barForeground)
-          font.family: root.fontFamily
-          font.pixelSize: Style.bar.iconFont
-          opacity: root.onAir ? 1.0 : (root.degraded ? 0.4 : 0.85)
+          visible: root.pillMode
+          implicitWidth: root.pillWidth
+          implicitHeight: Math.round(pillMetrics.height) + Style.space(6)
+          radius: Style.cornerRadius > 0 ? implicitHeight / 2 : 0
+          color: root.pillFill
+          borderSpec: Border.none()
+
+          Row {
+            anchors.centerIn: parent
+            spacing: Style.space(5)
+
+            Rectangle {
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(6)
+              height: width
+              radius: width / 2
+              color: root.pillForeground
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.pillText
+              color: root.pillForeground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+            }
+          }
         }
 
-        // Live indicator dot (bottom-right of the glyph).
-        Rectangle {
-          visible: root.onAir
-          anchors.right: parent.right
-          anchors.bottom: parent.bottom
-          anchors.rightMargin: Style.space(2)
-          anchors.bottomMargin: Style.space(2)
-          width: Style.space(6)
-          height: width
-          radius: width / 2
-          color: root.accent
+        // Camera glyph when idle — green when live is unreachable here
+        // because live shows the pill instead; dimmed when degraded.
+        Text {
+          visible: !root.pillMode
+          anchors.centerIn: parent
+          text: "󰅱"
+          color: root.serviceMissing ? root.barDim : root.barForeground
+          font.family: root.fontFamily
+          font.pixelSize: Style.bar.iconFont
+          opacity: root.serviceMissing ? 0.4 : 0.85
         }
       }
     }
 
     onPressed: function (buttonCode) {
       if (buttonCode === Qt.RightButton) {
-        if (root.service) root.service.toggle()
+        if (root.service && !root.busy) root.service.toggle()
         return
       }
       if (root.opened) root.close()
@@ -228,7 +275,7 @@ Panel {
                 }
 
                 Text {
-                  text: root.heroMeta
+                  text: root.busy ? "Working…" : root.heroMeta
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -238,11 +285,11 @@ Panel {
               }
 
               Button {
-                text: root.onAir ? "Stop" : "Start"
+                text: root.busy ? "…" : (root.onAir ? "Stop" : "Start")
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 bordered: true
-                enabled: !root.picking
+                enabled: !root.picking && !root.busy
                 opacity: enabled ? 1.0 : 0.4
                 hasCursor: root.hasCursorAt("toggle")
                 onHovered: function (on) { if (on) root.setCursor("toggle") }
@@ -258,6 +305,7 @@ Panel {
             x: Style.space(10)
             text: {
               if (!root.service) return "The OMARec service is not loaded."
+              if (root.degraded) return root.degradedHint !== "" ? root.degradedHint : "The OMARec CLI is unavailable."
               if (root.picking) return "Choose a camera…"
               return ""
             }
@@ -317,7 +365,7 @@ Panel {
                 foreground: root.foreground
                 hoverColor: root.foreground
                 fontFamily: root.fontFamily
-                enabled: !root.picking
+                enabled: !root.picking && !root.busy
                 opacity: enabled ? 1.0 : 0.4
                 onHovered: function (on) { if (on) root.setCursor("camera-pick") }
                 onClicked: root.pickCamera()
@@ -382,7 +430,7 @@ Panel {
             leftPadding: Style.space(10)
 
             Repeater {
-              model: ["0", "8", "16", "20"]
+              model: ["0", "8", "12", "16", "20"]
 
               Button {
                 required property string modelData
@@ -444,6 +492,46 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
+
+          CursorSurface {
+            width: column.width
+            hasCursor: root.hasCursorAt("reset")
+            foreground: root.foreground
+            fill: root.hoverFill
+            currentFill: root.selectedFill
+            implicitHeight: resetInner.implicitHeight + Style.spacing.rowPaddingX
+
+            RowLayout {
+              id: resetInner
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(10)
+              spacing: Style.space(8)
+
+              Text {
+                Layout.fillWidth: true
+                text: "Reset to defaults"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              PanelActionButton {
+                Layout.alignment: Qt.AlignVCenter
+                iconText: "󰅙"
+                tooltipText: "Restore default size, framing, rounding and position"
+                foreground: root.foreground
+                hoverColor: root.foreground
+                fontFamily: root.fontFamily
+                enabled: !root.busy
+                opacity: enabled ? 1.0 : 0.4
+                onHovered: function (on) { if (on) root.setCursor("reset") }
+                onClicked: root.resetDefaults()
+              }
+            }
+          }
 
           Text {
             width: column.width - Style.space(20)

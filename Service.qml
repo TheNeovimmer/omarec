@@ -11,9 +11,11 @@ import Quickshell.Io
 // bar.shell.serviceFor(moduleName)).
 //
 // All mutation and all state reads go through the CLI, which is the same source
-// the bar menu and keybinds use, so nothing can drift. The CLI reuses Omarchy's
-// shipped `WebcamOverlay` window rules, so this plugin never touches
-// hyprland.lua or any Omarchy config.
+// the bar menu and keybinds use, so nothing can drift. The overlay uses its OWN
+// Wayland app id (omarec-<orientation>-<size>-r<rounding>-<position>) with its
+// own geometry applied via a runtime `hl.window_rule` — this plugin never
+// touches hyprland.lua or any Omarchy config, and it never collides with
+// Omarchy's own screen-recording `WebcamOverlay`.
 QtObject {
   id: root
 
@@ -23,10 +25,10 @@ QtObject {
   property string omarchyPath: Quickshell.env("OMARCHY_PATH") || ""
 
   // ------------------------------------------------------- public surface
-  // The floating overlay is up when hyprctl sees a WebcamOverlay window.
+  // The floating overlay is up when hyprctl sees one of our omarec-* windows.
   readonly property string state: _state
   readonly property bool active: _state === "running"
-  // Remembered device and size, resolved off the CLI so the panel and tooltip
+  // Remembered device and presets, resolved off the CLI so the panel and tooltip
   // agree with what bin/omarec will actually use.
   readonly property string camera: _camera
   readonly property string size: _size
@@ -35,7 +37,11 @@ QtObject {
   readonly property string position: _position
   // True while a picker menu is up; the panel can dim its Change button.
   readonly property bool picking: _picking
-  readonly property bool busy: statusProc.running || actionProc.running
+  // True when the CLI itself is unusable (missing deps); the panel shows
+  // a hint instead of silently doing nothing.
+  readonly property bool degraded: _degraded
+  readonly property string degradedHint: _degradedHint
+  readonly property bool busy: statusProc.running || settingsProc.running || actionProc.running || pickCameraProc.running
 
   // Resolved once: the plugin dir is wherever the shell loaded this file from.
   readonly property string pluginDir: {
@@ -45,6 +51,7 @@ QtObject {
     return decodeURIComponent(value)
   }
   readonly property string cliPath: pluginDir + "bin/omarec"
+  readonly property string confPath: pluginDir + "omarec.conf"
 
   // -------------------------------------------------------------- private
   property string _state: "stopped"
@@ -54,6 +61,12 @@ QtObject {
   property string _rounding: "12"
   property string _position: "bottom-right"
   property bool _picking: false
+  property bool _degraded: false
+  property string _degradedHint: ""
+  // Latest action waiting while another one runs; only the newest is kept —
+  // rapid clicks converge on the user's last intent instead of queueing stale
+  // restarts of a camera overlay.
+  property var _pendingArgs: null
 
   // When the overlay state changed since we last read it, nudge every widget
   // so the glyph/dot and panel stay in sync even while the panel is open.
@@ -63,7 +76,27 @@ QtObject {
   function notify(message) {
     var base = root.omarchyPath || Quickshell.env("OMARCHY_PATH") || ""
     var binary = base !== "" ? base + "/bin/omarchy-notification-send" : "omarchy-notification-send"
-    Quickshell.execDetached([binary, "OMARec", String(message)])
+    Quickshell.execDetached([binary, String(message)])
+  }
+
+  function applySettingsJson(text) {
+    var data = null
+    try {
+      data = JSON.parse(String(text || ""))
+    } catch (e) {
+      return false
+    }
+    if (!data || typeof data !== "object") return false
+    root._camera = String(data.device || "")
+    root._size = String(data.size || "medium")
+    root._orientation = String(data.orientation || "portrait")
+    root._rounding = String(data.rounding || "12")
+    root._position = String(data.position || "bottom-right")
+    var next = String(data.status || "stopped") === "running" ? "running" : "stopped"
+    var wasActive = root._state === "running"
+    root._state = next
+    if ((next === "running") !== wasActive) root.overlayChanged(next === "running")
+    return true
   }
 
   // ---- status: is the overlay up? ----
@@ -81,38 +114,42 @@ QtObject {
     }
   }
 
-  // ---- remembered settings (refreshed lazily) ----
-  // The device and preset only change through explicit user action (pick / set),
-  // so unlike status they are NOT polled every tick — that keeps the steady-state
-  // cost of this service to a single cheap `status` process per poll.
-  property Process cameraProc: Process {
-    id: cameraProc
-    command: [root.cliPath, "get-device"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root._camera = text.trim() }
-  }
-  property Process sizeProc: Process {
-    id: sizeProc
-    command: [root.cliPath, "get-size"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root._size = text.trim() || "medium" }
-  }
-  property Process orientationProc: Process {
-    id: orientationProc
-    command: [root.cliPath, "get-orientation"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root._orientation = text.trim() || "portrait" }
-  }
-  property Process roundingProc: Process {
-    id: roundingProc
-    command: [root.cliPath, "get-rounding"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root._rounding = text.trim() || "12" }
-  }
-  property Process positionProc: Process {
-    id: positionProc
-    command: [root.cliPath, "get-position"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root._position = text.trim() || "bottom-right" }
+  // ---- remembered settings + status in one shot ----
+  // A single `get-all --json` call replaces five one-value probes, so a full
+  // refresh costs one process instead of five. It runs lazily (panel open,
+  // action landed, conf changed) — the steady-state tick stays a single cheap
+  // `status` probe.
+  property Process settingsProc: Process {
+    id: settingsProc
+    command: [root.cliPath, "get-all", "--json"]
+    stdout: StdioCollector {
+      id: settingsOut
+      waitForEnd: true
+    }
+    stderr: StdioCollector {
+      id: settingsErr
+      waitForEnd: true
+    }
+    onExited: function(code) {
+      if (code === 0 && root.applySettingsJson(settingsOut.text)) {
+        root._degraded = false
+        root._degradedHint = ""
+      } else {
+        // Only flag degraded when the CLI itself failed, not when there is
+        // simply no webcam (that prints fine with an empty device).
+        var err = String(settingsErr.text || "").trim()
+        if (err !== "") {
+          root._degraded = true
+          root._degradedHint = err.split("\n")[0]
+        }
+      }
+    }
   }
 
-  // ---- one-shot actions (on/off/toggle/resize) ----
-  // A single runner serialises them; after each action the status is re-read.
+  // ---- one-shot actions (on/off/toggle/resize/...) ----
+  // A single runner serialises them; a click that lands mid-flight is
+  // remembered and runs next, so rapid toggles never drop the last intent.
+  // After the queue drains the status is re-read.
   property Process actionProc: Process {
     id: actionProc
     stderr: StdioCollector { id: stderrCollector; waitForEnd: true }
@@ -123,16 +160,29 @@ QtObject {
           if (lines[i].trim() !== "") root.notify(lines[i].trim())
         }
       }
-      root.refresh(true)
+      if (root._pendingArgs !== null && root._pendingArgs !== undefined) {
+        var next = root._pendingArgs
+        root._pendingArgs = null
+        root.startAction(next)
+      } else {
+        root.refresh(true)
+      }
     }
   }
 
-  function runAction(args) {
-    if (actionProc.running) return
+  function startAction(args) {
     var command = [root.cliPath]
     for (var i = 0; i < args.length; i++) command.push(String(args[i]))
     actionProc.command = command
     actionProc.running = true
+  }
+
+  function runAction(args) {
+    if (actionProc.running) {
+      root._pendingArgs = args
+      return
+    }
+    root.startAction(args)
   }
 
   // ---- picker (blocking menu via omarchy-menu-select in the CLI) ----
@@ -142,7 +192,8 @@ QtObject {
       waitForEnd: true
       onStreamFinished: {
         root._picking = false
-        root._camera = text.trim()
+        var device = text.trim()
+        if (device !== "") root._camera = device
       }
     }
     onExited: function() {
@@ -156,13 +207,7 @@ QtObject {
   // camera and setting labels (panel open, camera pick done, or setting change).
   function refresh(full) {
     if (!statusProc.running) statusProc.running = true
-    if (full) {
-      if (!cameraProc.running) cameraProc.running = true
-      if (!sizeProc.running) sizeProc.running = true
-      if (!orientationProc.running) orientationProc.running = true
-      if (!roundingProc.running) roundingProc.running = true
-      if (!positionProc.running) positionProc.running = true
-    }
+    if (full && !settingsProc.running) settingsProc.running = true
   }
 
   function on() { root.runAction(["on"]) }
@@ -174,13 +219,21 @@ QtObject {
 
   function setSize(size) {
     var value = String(size || "")
+    if (["small", "medium", "large"].indexOf(value) < 0) return
     if (value === root._size) return
     root._size = value
     root.runAction(["resize", value])
   }
 
+  function stepSize(direction) {
+    var value = String(direction || "")
+    if (["smaller", "larger"].indexOf(value) < 0) return
+    root.runAction([value])
+  }
+
   function setOrientation(orientation) {
     var value = String(orientation || "")
+    if (["portrait", "landscape"].indexOf(value) < 0) return
     if (value === root._orientation) return
     root._orientation = value
     root.runAction(["orientation", value])
@@ -202,8 +255,12 @@ QtObject {
     root.runAction(["position", value])
   }
 
+  function resetDefaults() {
+    root.runAction(["reset"])
+  }
+
   function pickCamera() {
-    if (pickCameraProc.running) return
+    if (pickCameraProc.running || actionProc.running) return
     root._picking = true
     pickCameraProc.command = [root.cliPath, "pick-device"]
     pickCameraProc.running = true
@@ -220,6 +277,29 @@ QtObject {
     triggeredOnStart: true
     onTriggered: root.refresh(false)
   }
+
+  // External edits (terminal CLI, reset) land in omarec.conf — pick them up
+  // so the panel never disagrees with the file. The conf file ships with the
+  // plugin, so a single watcher on the file itself is enough.
+  property FileView confWatcher: FileView {
+    id: confWatcherView
+    path: root.confPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: {
+      confWatcherView.reload()
+      confDebounce.restart()
+    }
+  }
+
+  property Timer confDebounce: Timer {
+    id: confDebounce
+    interval: 300
+    repeat: false
+    onTriggered: root.refresh(true)
+  }
+
+  Component.onCompleted: root.refresh(true)
 
   // --------------------------------------------------------------- IPC
   property IpcHandler ipc: IpcHandler {
@@ -253,6 +333,16 @@ QtObject {
     function status(): string {
       return root._state
     }
+    function size(): string {
+      return root._size
+    }
+    function setSize(value: string): string {
+      root.setSize(value)
+      return "ok"
+    }
+    function device(): string {
+      return root._camera
+    }
     function pickDevice(): string {
       root.pickCamera()
       return "ok"
@@ -276,6 +366,10 @@ QtObject {
     }
     function setPosition(value: string): string {
       root.setPosition(value)
+      return "ok"
+    }
+    function reset(): string {
+      root.resetDefaults()
       return "ok"
     }
   }
