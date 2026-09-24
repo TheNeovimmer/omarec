@@ -53,6 +53,10 @@ expect_fail "position rejects junk" "$CLI" position center
 expect_ok "resize accepts small" "$CLI" resize small
 expect_out "get-size reads back small" "small" "$CLI" get-size
 
+# --- start/stop validation (no camera touched) ---
+expect_fail "on rejects a missing device" "$CLI" on /dev/does-not-exist
+expect_ok "off exits 0 when nothing runs" "$CLI" off
+
 # --- rounding clamp ---
 "$CLI" rounding 99 >/dev/null 2>&1
 expect_out "rounding clamps to 20" "20" "$CLI" get-rounding

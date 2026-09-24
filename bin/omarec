@@ -271,6 +271,19 @@ apply_geometry() { # orientation size rounding position
   printf '%s' "$app_id"
 }
 
+# PIDs of our overlay mpv instances (pgrep never matches itself).
+omarec_pids() {
+  pgrep -f -- "--wayland-app-id=omarec-" 2>/dev/null || true
+}
+
+# True when no process holds the camera. A vanished window does NOT mean a
+# released camera: mpv drops its Wayland surface before it closes v4l2, so a
+# restart that only waits for the window races with "device busy".
+device_free() { # device
+  have fuser || return 0
+  ! fuser -s "$1" 2>/dev/null
+}
+
 start_overlay() {
   local device="${1:-}"
   local size orientation rounding position app_id vf
@@ -307,35 +320,68 @@ start_overlay() {
 
   app_id="$(apply_geometry "$orientation" "$size" "$rounding" "$position")"
 
-  mpv "av://v4l2:$device" \
+  # The old mpv's window is gone but its v4l2 handle may not be: launching
+  # before the camera is free dies with "device busy" and looks exactly like
+  # the overlay turning itself off on every setting change.
+  local waited=0
+  while ((waited < 60)) && ! device_free "$device"; do
+    sleep 0.05
+    ((waited++)) || true
+  done
+
+  launch_mpv "$device" "$capture_options" "$vf" "$app_id"
+  if overlay_wait; then
+    return 0
+  fi
+
+  # One retry: a slow camera release can still beat the free-device wait.
+  # Stop everything first so the retry never stacks a second mpv on top of a
+  # half-started one.
+  stop_overlay
+  sleep 0.3
+  launch_mpv "$device" "$capture_options" "$vf" "$app_id"
+  if overlay_wait; then
+    return 0
+  fi
+
+  stop_overlay
+  notify -u critical -t 3000 "Camera overlay failed to appear"
+  return 1
+}
+
+launch_mpv() { # device capture_options vf app_id
+  mpv "av://v4l2:$1" \
     --profile=low-latency --untimed --no-cache \
-    --demuxer-lavf-o="$capture_options" \
-    "$vf" \
-    --title="WebcamOverlay" --wayland-app-id="$app_id" \
+    --demuxer-lavf-o="$2" \
+    "$3" \
+    --title="WebcamOverlay" --wayland-app-id="$4" \
     --no-border --no-audio --no-osc --osd-level=0 \
     --really-quiet &>/dev/null &
   disown || true
+}
 
+overlay_wait() {
   local waited=0
   while ((waited < 40)) && ! overlay_active; do
     sleep 0.05
     ((waited++)) || true
   done
-
-  if ! overlay_active; then
-    notify -u critical -t 3000 "Camera overlay failed to appear"
-    return 1
-  fi
-  return 0
+  overlay_active
 }
 
 stop_overlay() {
   # Limit the stop command to mpv instances carrying OMARec's app-id prefix.
   # Other webcam previews and Omarchy's recorder overlay stay untouched.
   pkill -f -- "--wayland-app-id=omarec-" 2>/dev/null || true
-  # Give the compositor a beat to drop the windows before a restart re-maps.
+  # Wait for the processes first, then the windows: the compositor drops the
+  # window before mpv releases the camera, and a restart must not outrun it.
   local waited=0
-  while ((waited < 10)) && overlay_active; do
+  while ((waited < 60)) && [[ -n $(omarec_pids) ]]; do
+    sleep 0.05
+    ((waited++)) || true
+  done
+  waited=0
+  while ((waited < 20)) && overlay_active; do
     sleep 0.05
     ((waited++)) || true
   done
