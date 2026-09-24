@@ -1,7 +1,8 @@
 #!/bin/bash
 # Contract tests for bin/omarec. No camera needed and the overlay is never
-# started: every case runs against the stopped state. The plugin's omarec.conf
-# is backed up and restored, so the suite is safe to run on a live install.
+# started: every case runs against the stopped state. State is isolated in a
+# throwaway XDG_STATE_HOME, so the suite never touches the live install — and
+# it also exercises the template-seeding path on first write.
 #
 # Usage: tests/run.sh
 
@@ -9,14 +10,14 @@ set -u
 
 PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI="$PLUGIN_DIR/bin/omarec"
-CONF="$PLUGIN_DIR/omarec.conf"
-BACKUP="$(mktemp)"
-cp -f "$CONF" "$BACKUP" 2>/dev/null || true
+TEST_STATE="$(mktemp -d)"
+export XDG_STATE_HOME="$TEST_STATE"
+CONF="$TEST_STATE/omarec/omarec.conf"
 
 PASS=0
 FAIL=0
 
-restore() { cp -f "$BACKUP" "$CONF"; rm -f "$BACKUP"; }
+restore() { rm -rf "$TEST_STATE"; }
 trap restore EXIT
 
 ok() { PASS=$((PASS + 1)); printf 'ok   %s\n' "$1"; }
@@ -43,6 +44,11 @@ expect_out() { # desc, expected, command...
 expect_ok "help exits 0" "$CLI" help
 expect_ok "--help exits 0" "$CLI" --help
 expect_ok "version exits 0" "$CLI" version
+
+# --- state seeding from the shipped template ---
+"$CLI" resize medium >/dev/null 2>&1
+if [[ -f $CONF ]]; then ok "first write seeds the state conf"; else bad "first write seeds the state conf"; fi
+expect_out "seeded size reads back medium" "medium" "$CLI" get-size
 expect_fail "unknown command fails" "$CLI" frobnicate
 
 # --- validation ---

@@ -51,7 +51,15 @@ QtObject {
     return decodeURIComponent(value)
   }
   readonly property string cliPath: pluginDir + "bin/omarec"
-  readonly property string confPath: pluginDir + "omarec.conf"
+  // Mirrors bin/omarec's own resolution order exactly, because the FileView
+  // watcher has to land on the file the CLI actually writes: the XDG state
+  // dir, never the plugin folder (writes there hot-reload the plugin and
+  // would abort in-flight restarts).
+  readonly property string confPath: {
+    var stateHome = Quickshell.env("XDG_STATE_HOME")
+    if (!stateHome) stateHome = (Quickshell.env("HOME") || "") + "/.local/state"
+    return String(stateHome) + "/omarec/omarec.conf"
+  }
 
   // -------------------------------------------------------------- private
   property string _state: "stopped"
@@ -278,9 +286,9 @@ QtObject {
     onTriggered: root.refresh(false)
   }
 
-  // External edits (terminal CLI, reset) land in omarec.conf — pick them up
-  // so the panel never disagrees with the file. The conf file ships with the
-  // plugin, so a single watcher on the file itself is enough.
+  // External edits (terminal CLI, reset) land in the state omarec.conf — pick
+  // them up so the panel never disagrees with the file. The state dir is
+  // outside the plugin folder, so watching it never triggers a plugin reload.
   property FileView confWatcher: FileView {
     id: confWatcherView
     path: root.confPath

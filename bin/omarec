@@ -14,8 +14,11 @@
 #     never leaks its geometry/rounding to them.
 #   * Own geometry via a runtime `hl.window_rule` (float/pin/size/move/rounding);
 #     no edits to hyprland.lua or any Omarchy config are needed.
-#   * All state (device, size, orientation, rounding, position) lives in omarec.conf
-#     inside this plugin folder; deleting the folder removes everything.
+#   * All state (device, size, orientation, rounding, position) lives in
+#     `$XDG_STATE_HOME/omarec/omarec.conf` — deliberately NOT in the plugin
+#     folder, because the shell hot-reloads the plugin on any change there and
+#     would abort in-flight restarts. Seeded once from the shipped
+#     `omarec.conf` template (which also imports pre-2.2 plugin-dir state).
 #
 # Usage:
 #   omarec                          # toggle
@@ -40,8 +43,37 @@ set -euo pipefail
 VERSION="2.1.0"
 
 PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-CONF_FILE="$PLUGIN_DIR/omarec.conf"
-LOCK_FILE="$PLUGIN_DIR/.omarec.conf.lock"
+
+# All volatile state lives in the XDG state dir — NEVER in the plugin dir. The
+# shell hot-reloads the plugin whenever anything under its folder changes, so a
+# conf or lock file there would abort every in-flight restart right after its
+# stop phase and leave the overlay dead. (That was the "position switch turns
+# it off" bug.)
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarec"
+CONF_FILE="$STATE_DIR/omarec.conf"
+LOCK_FILE="$STATE_DIR/.omarec.conf.lock"
+RUN_LOCK="$STATE_DIR/.omarec.lock"
+# Shipped defaults template; doubles as the pre-2.2 state location, so an
+# existing plugin-dir conf (with the user's remembered device) is imported
+# once rather than reset.
+TEMPLATE_CONF="$PLUGIN_DIR/omarec.conf"
+
+ensure_state_dir() {
+  [[ -d $STATE_DIR ]] || mkdir -p "$STATE_DIR"
+}
+
+# First run: seed the state conf from the shipped template (fresh installs) or
+# from a previous plugin-dir conf (upgrades from <2.2, which also carries the
+# user's remembered device). Afterwards the state conf is authoritative and the
+# plugin dir is never written to.
+seed_state_conf() {
+  ensure_state_dir
+  [[ -f $CONF_FILE ]] && return 0
+  if [[ -f $TEMPLATE_CONF && $TEMPLATE_CONF != "$CONF_FILE" ]]; then
+    cp -f "$TEMPLATE_CONF" "$CONF_FILE"
+  fi
+  return 0
+}
 
 DEFAULT_SIZE="medium"
 DEFAULT_ORIENTATION="portrait"
@@ -95,6 +127,7 @@ read_config() {
 # comments and blank lines), replaces the key in place, appends if missing.
 write_config() {
   local key="$1" value="$2"
+  seed_state_conf
   local tmp wrote=0 line k
   tmp="$(mktemp "${CONF_FILE}.tmp.XXXXXX")"
   # Serialize concurrent writers (QML actions + terminal CLI).
@@ -509,7 +542,8 @@ USAGE
 # panel never block behind a restart.
 case "${1:-toggle}" in
   on | start | off | stop | toggle | resize | smaller | larger | orientation | rounding | position | pick-device | reset)
-    exec 8>"$PLUGIN_DIR/.omarec.lock"
+    seed_state_conf
+    exec 8>"$RUN_LOCK"
     flock -x 8 || die "another omarec change is already running"
     ;;
 esac
