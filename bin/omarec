@@ -486,6 +486,20 @@ Usage: omarec [on|off|toggle|resize|orientation|rounding|position|devices|pick-d
 USAGE
 }
 
+# Mutating commands hold an exclusive lock for their whole run, so concurrent
+# writers (a panel click racing a terminal command, two rapid clicks) serialise
+# instead of interleaving stop/start cycles and killing each other's mpv. The
+# waiter re-reads the conf after acquiring the lock, so it always restarts from
+# the latest settings and the overlay converges instead of dying. Reads
+# (status, get-*, devices, check) stay lock-free so the shell's 3s poll and the
+# panel never block behind a restart.
+case "${1:-toggle}" in
+  on | start | off | stop | toggle | resize | smaller | larger | orientation | rounding | position | pick-device | reset)
+    exec 8>"$PLUGIN_DIR/.omarec.lock"
+    flock -x 8 || die "another omarec change is already running"
+    ;;
+esac
+
 case "${1:-toggle}" in
   -h | --help | help)
     usage

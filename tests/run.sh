@@ -99,6 +99,17 @@ else
   bad "write preserves comments and unrelated keys"
 fi
 
+# --- concurrent writers serialise (stopped, so no overlay churn) ---
+"$CLI" resize medium >/dev/null 2>&1
+"$CLI" resize large >/dev/null 2>&1 &
+"$CLI" resize small >/dev/null 2>&1 &
+wait
+if "$CLI" get-size 2>/dev/null | grep -qxE 'small|medium|large'; then
+  ok "concurrent resize converges on a valid size"
+else
+  bad "concurrent resize converges on a valid size"
+fi
+
 # --- reset ---
 "$CLI" reset >/dev/null 2>&1
 expect_out "reset restores size" "medium" "$CLI" get-size

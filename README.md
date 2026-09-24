@@ -140,6 +140,11 @@ omarec devices  # what the picker would offer
 - **Stale panel values**: the service re-reads `omarec.conf` on every change,
   including edits made from the terminal. `omarchy shell omarec refresh`
   forces a re-read.
+- **Switching settings never stops the stream**: every change hot-restarts the
+  overlay (same camera, new shape/corner). Concurrent changes — a panel click
+  racing a terminal command — are serialised through a lock and converge on the
+  latest settings. If the shell restarts or the plugin updates mid-restart, the
+  in-flight restart is aborted; just press Start again.
 - **Tests**: `tests/run.sh` exercises the CLI contract (validation, clamping,
   `get-all --json`, `check`) without needing a camera.
 
