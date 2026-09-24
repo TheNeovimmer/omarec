@@ -350,13 +350,17 @@ start_overlay() {
 }
 
 launch_mpv() { # device capture_options vf app_id
+  # 8>&- closes the overlay mutex in the child: mpv must not inherit the open
+  # file description, or the exclusive lock would stay held for the whole life
+  # of the overlay and deadlock every later change (even `off`). The lock is
+  # always held on entry — launch_mpv only runs on mutating commands.
   mpv "av://v4l2:$1" \
     --profile=low-latency --untimed --no-cache \
     --demuxer-lavf-o="$2" \
     "$3" \
     --title="WebcamOverlay" --wayland-app-id="$4" \
     --no-border --no-audio --no-osc --osd-level=0 \
-    --really-quiet &>/dev/null &
+    --really-quiet 8>&- &>/dev/null &
   disown || true
 }
 
@@ -376,10 +380,20 @@ stop_overlay() {
   # Wait for the processes first, then the windows: the compositor drops the
   # window before mpv releases the camera, and a restart must not outrun it.
   local waited=0
-  while ((waited < 60)) && [[ -n $(omarec_pids) ]]; do
+  while ((waited < 40)) && [[ -n $(omarec_pids) ]]; do
     sleep 0.05
     ((waited++)) || true
   done
+  # A wedged v4l2 driver can leave mpv ignoring SIGTERM: escalate so a stuck
+  # overlay can never pin the camera (or the mutex) forever.
+  if [[ -n $(omarec_pids) ]]; then
+    pkill -9 -f -- "--wayland-app-id=omarec-" 2>/dev/null || true
+    waited=0
+    while ((waited < 20)) && [[ -n $(omarec_pids) ]]; do
+      sleep 0.05
+      ((waited++)) || true
+    done
+  fi
   waited=0
   while ((waited < 20)) && overlay_active; do
     sleep 0.05
