@@ -1,5 +1,7 @@
 # OMARec Studio
 
+![OMARec Studio preview](preview.png)
+
 A polished, fully self-contained [Omarchy](https://omarchy.org) bar-widget plugin for
 sharing your screen in meetings with a **floating live webcam overlay**. It provides the
 presence of a screen-recording camera bubble, without recording anything.
