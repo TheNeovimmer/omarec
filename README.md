@@ -74,9 +74,11 @@ Preferences (remembered camera, size, orientation, rounding, and position) are s
 ## Panel & controls
 
 The widget uses Omarchy's native panel kit (`qs.Ui`) with a concise Studio header, a live
-state toggle, direct camera selection, and grouped controls for overlay size, orientation,
-rounding, and screen position. It feels native to Omarchy while keeping meeting controls
-visible at a glance.
+state toggle, direct camera selection, and native segmented controls splitting overlay
+size (Small/Medium/Large) from framing (Portrait 8:9 / Landscape 16:9), plus rounding
+presets, a corner pad for screen position, and a live geometry preview showing the
+bubble's true relative size, shape, and corner. It feels native to Omarchy while keeping
+meeting controls visible at a glance.
 
 - **Left-click** the bar icon to open/close the panel.
 - **Right-click** the bar icon to toggle the overlay.

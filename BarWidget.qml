@@ -9,8 +9,9 @@ import qs.Ui
 // Bar entry point for OMARec: a camera icon that becomes a LIVE pill while the
 // floating camera overlay is up, plus a compact Studio control panel. The UI is
 // deliberately distinct from on-air: no PanelHero, no toggle switch — instead a
-// minimal header row with a start/stop button and grouped appearance/position
-// grids.
+// minimal header row with a start/stop button, native segmented controls for
+// size, framing and rounding, a corner pad for position, and a live geometry
+// preview showing exactly where the bubble will land.
 Panel {
   id: root
 
@@ -56,7 +57,7 @@ Panel {
   readonly property color pillForeground: Color.background
   readonly property real pillWidth: Math.round(pillMetrics.width) + Style.space(30)
 
-  // ---- bar icon (distinct from on-air: glyph + live dot) ---------------
+  // ---- bar icon: camera glyph when idle, LIVE pill when live ---------
   readonly property bool serviceMissing: !root.service
 
   readonly property string tooltip: {
@@ -68,10 +69,34 @@ Panel {
   }
 
   // ---- panel -----------------------------------------------------------
+  readonly property string aspectLabel: root.orientation === "landscape" ? "16:9" : "8:9"
+  readonly property string positionLabel: {
+    if (root.position === "top-left") return "Top left"
+    if (root.position === "top-right") return "Top right"
+    if (root.position === "bottom-left") return "Bottom left"
+    return "Bottom right"
+  }
+  // Overlay footprint as fractions of a 16:9 screen, mirroring the monitor_h
+  // geometry in bin/omarec so the preview shows true proportions.
+  readonly property var previewGeom: {
+    var landscape = root.orientation === "landscape"
+    var w, h
+    if (landscape) {
+      w = root.size === "small" ? 0.25 : (root.size === "large" ? 0.45 : 0.375)
+      h = w
+    } else {
+      w = root.size === "small" ? 0.09 : (root.size === "large" ? 0.16875 : 0.125)
+      h = root.size === "small" ? 0.18 : (root.size === "large" ? 0.3375 : 0.25)
+    }
+    return { "w": w, "h": h }
+  }
+  readonly property bool previewLeft: root.position === "top-left" || root.position === "bottom-left"
+  readonly property bool previewTop: root.position === "top-left" || root.position === "top-right"
+
   readonly property string heroMeta: {
     if (!root.service) return "Service not loaded"
     if (root.onAir) return "Live · " + (root.camera || "default camera")
-    return "Ready · " + root.orientation + " · " + root.size
+    return "Ready · " + root.orientation + " " + root.aspectLabel + " · " + root.size
   }
 
   // ---- cursor ----------------------------------------------------------
@@ -101,6 +126,23 @@ Panel {
     if (i < 0) return
     root.cursorActive = true
     root.cursorIndex = i
+  }
+  // Map the flat panel cursor onto one ButtonGroup's chip index, or -1 when
+  // the cursor sits outside that group. Keeps arrow-key navigation working
+  // across groups while each group keeps its native single-row behaviour.
+  function groupCursor(first, count) {
+    if (!root.cursorActive) return -1
+    var base = root.navIndex(first)
+    if (base < 0) return -1
+    var offset = root.cursorIndex - base
+    return (offset >= 0 && offset < count) ? offset : -1
+  }
+  function groupHover(first, count, index, isHovered) {
+    if (!isHovered) return
+    var base = root.navIndex(first)
+    if (base < 0 || index < 0 || index >= count) return
+    root.cursorActive = true
+    root.cursorIndex = base + index
   }
   function activateCursor() {
     var kind = root.nav[root.cursorIndex]
@@ -373,47 +415,72 @@ Panel {
             }
           }
 
-          // ---- appearance ----
+          // ---- size ----
           PanelSectionHeader {
-            text: "APPEARANCE"
+            text: "SIZE"
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
 
-          // Size + Orientation in a compact 2-column grid.
-          Grid {
+          BorderSurface {
             width: column.width - Style.space(20)
             x: Style.space(10)
-            columns: 2
-            spacing: Style.space(6)
+            implicitHeight: sizeGroup.implicitHeight + Style.spacing.rowPaddingX * 2
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+            radius: Style.cornerRadius
+            borderSpec: Border.flat(Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10), 1)
 
-            Repeater {
-              model: [
-                { label: "Small", size: "small" },
-                { label: "Medium", size: "medium" },
-                { label: "Large", size: "large" },
-                { label: "Portrait", orient: "portrait" },
-                { label: "Landscape", orient: "landscape" }
+            ButtonGroup {
+              id: sizeGroup
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(14)
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              focusable: false
+              options: [
+                { value: "small", label: "Small", tooltip: "Compact bubble" },
+                { value: "medium", label: "Medium", tooltip: "Balanced bubble" },
+                { value: "large", label: "Large", tooltip: "Large bubble" }
               ]
+              value: root.size
+              cursorIndex: root.groupCursor("size-small", 3)
+              onChanged: function (v) { root.applySize(v) }
+              onHovered: function (index, isHovered) { root.groupHover("size-small", 3, index, isHovered) }
+            }
+          }
 
-              Button {
-                required property var modelData
-                width: (parent.width - parent.columnSpacing) / 2
-                text: modelData.label
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                bordered: true
-                selected: modelData.size
-                  ? root.size === modelData.size
-                  : root.orientation === modelData.orient
-                hasCursor: modelData.size
-                  ? root.hasCursorAt("size-" + modelData.size)
-                  : root.hasCursorAt("orient-" + modelData.orient)
-                onHovered: function (on) {
-                  if (on) root.setCursor(modelData.size ? "size-" + modelData.size : "orient-" + modelData.orient)
-                }
-                onClicked: modelData.size ? root.applySize(modelData.size) : root.applyOrientation(modelData.orient)
-              }
+          // ---- framing ----
+          PanelSectionHeader {
+            text: "FRAMING"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          BorderSurface {
+            width: column.width - Style.space(20)
+            x: Style.space(10)
+            implicitHeight: framingGroup.implicitHeight + Style.spacing.rowPaddingX * 2
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+            radius: Style.cornerRadius
+            borderSpec: Border.flat(Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10), 1)
+
+            ButtonGroup {
+              id: framingGroup
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(14)
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              focusable: false
+              options: [
+                { value: "portrait", label: "Portrait", tooltip: "Tall 8:9 crop" },
+                { value: "landscape", label: "Landscape", tooltip: "Wide 16:9 crop" }
+              ]
+              value: root.orientation
+              cursorIndex: root.groupCursor("orient-portrait", 2)
+              onChanged: function (v) { root.applyOrientation(v) }
+              onHovered: function (index, isHovered) { root.groupHover("orient-portrait", 2, index, isHovered) }
             }
           }
 
@@ -424,25 +491,33 @@ Panel {
             fontFamily: root.fontFamily
           }
 
-          Row {
-            width: column.width
-            spacing: Style.space(6)
-            leftPadding: Style.space(10)
+          BorderSurface {
+            width: column.width - Style.space(20)
+            x: Style.space(10)
+            implicitHeight: roundingGroup.implicitHeight + Style.spacing.rowPaddingX * 2
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+            radius: Style.cornerRadius
+            borderSpec: Border.flat(Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10), 1)
 
-            Repeater {
-              model: ["0", "8", "12", "16", "20"]
-
-              Button {
-                required property string modelData
-                text: modelData === "0" ? "Off" : modelData + "px"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                bordered: true
-                selected: root.rounding === modelData
-                hasCursor: root.hasCursorAt("rounding-" + modelData)
-                onHovered: function (on) { if (on) root.setCursor("rounding-" + modelData) }
-                onClicked: root.applyRounding(modelData)
-              }
+            ButtonGroup {
+              id: roundingGroup
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(14)
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              focusable: false
+              options: [
+                { value: "0", label: "Off", tooltip: "Square corners" },
+                { value: "8", label: "8px" },
+                { value: "12", label: "12px" },
+                { value: "16", label: "16px" },
+                { value: "20", label: "20px", tooltip: "Maximum rounding" }
+              ]
+              value: root.rounding
+              cursorIndex: root.groupCursor("rounding-0", 5)
+              onChanged: function (v) { root.applyRounding(v) }
+              onHovered: function (index, isHovered) { root.groupHover("rounding-0", 5, index, isHovered) }
             }
           }
 
@@ -489,6 +564,44 @@ Panel {
                 onClicked: root.applyPosition(modelData.value)
               }
             }
+          }
+
+          // ---- preview ----
+          PanelSectionHeader {
+            text: "PREVIEW"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          // A 16:9 screen mock with the bubble drawn at its true relative
+          // size, shape and corner — the fractions mirror bin/omarec's
+          // monitor_h geometry, so what you see is where mpv will land.
+          BorderSurface {
+            width: column.width - Style.space(20)
+            x: Style.space(10)
+            implicitHeight: Math.round(width * 9 / 16)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+            radius: Style.cornerRadius
+            borderSpec: Border.flat(Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10), 1)
+
+            Rectangle {
+              width: Math.max(Style.space(16), parent.width * root.previewGeom.w)
+              height: Math.max(Style.space(16), parent.height * root.previewGeom.h)
+              x: root.previewLeft ? Style.space(6) : parent.width - width - Style.space(6)
+              y: root.previewTop ? Style.space(6) : parent.height - height - Style.space(6)
+              color: root.accent
+              opacity: root.onAir ? 1.0 : 0.55
+              radius: Math.min(width, height) * Number(root.rounding) / 40
+            }
+          }
+
+          Text {
+            width: column.width - Style.space(20)
+            x: Style.space(10)
+            text: root.positionLabel + " · " + root.aspectLabel + " · " + root.size
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
           }
 
           PanelSeparator { foreground: root.foreground }
